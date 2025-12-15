@@ -14,13 +14,14 @@
   packages = [
     pkgs.git
     pkgs.protobuf_32
+    pkgs.grpcurl
   ];
 
   # https://devenv.sh/languages/
   languages.rust = {
     enable = true;
     channel = "stable";
-    version = "1.81.0";
+    version = "1.82.0";
     components = [
       "rustc"
       "cargo"
