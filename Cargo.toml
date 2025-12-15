@@ -1,7 +1,8 @@
 [package]
+name = "req_packager"
 name = "poc-ui"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 axum = { version = "0.8.8", features = ["tokio", "http2"] }
