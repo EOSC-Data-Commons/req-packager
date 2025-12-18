@@ -2,9 +2,11 @@
 
 The design notes contains RFCs and miscellaneous notes that will eventually be incorporated into the official PDF[1] and published on project page [2].
 Every time an RFC is merged, the Typest PDF needs to be updated accordingly.
+The design here is supposed to comform with more broad package spec written in [3].
 
 [1]: https://typst.app/project/rohTQ0J9ibtW6gosRyDHnc
 [2]: https://confluence.egi.eu/display/EOSCDATACOMMONS
+[3]: https://docs.google.com/document/d/1I2Z_87dYCLflf7LmJnkFWB9Y4oa6Esdv8vifhqyp-n8/edit?usp=sharing
 
 ## Roadmaps
 
@@ -44,7 +46,7 @@ The RP interfaces with the following components:
 
 - Frontend, who receives requests to prepare information needed for rendering UIs and launching a selected data player.
 - Dispatcher, who receives structured requests from the RP describing how to prepare and launch a registered VRE.
-- Filemetrix, who provides detailed file-level metadata and hierarchy information upon request.
+- Filemetrix, who provides detailed file-level metadata and hierarchy information upon request, behind the filemetrix there is also type-registry which give a concrete type hint for a file.
 - tool-registry, who provides VREs/tools capabilities declared for dealing with different type of dataset.
 
 By introducing the RP as an explicit middleware layer, the frontend is decoupled from the dispatcher's internal APIs and operational complexity. 
@@ -122,6 +124,12 @@ Initially, lightweight tools can be launched quickly for single-file operations.
 Subsequently, metadata verification and environment preparation occur for full dataset or notebook launches. 
 This staged approach balances efficiency, responsiveness, and flexibility, ensuring that the VREs are only fully instantiated when necessary and with proper configuration.
 
+There are two divergence for how VRE allocate resources:
+
+1. VRE provide resources (CPU/GPU) themselves, this in relatively easy from ECD point of view because after dispatcher deligate the launch signal it become all VRE's responsibility to handle the further works.
+2. VRE callback EOSC for resources. It was mentioned that egi's resources should at certain point be able to be integrated and to be used by the WP7 partners. This require description on such VRE and on type of resources they can use.
+3. VRE callback other tool in the registry for resources. This might be out of scope but can be a useful case that tools not only the tool for data processing but can be resource tools that anounce to owning and providing computational resources. 
+
 ## Components
 
 ### Component 001
@@ -139,7 +147,46 @@ By storing information in the database can make display very responsive, however
 - Extra specs requires on describing how data store in the DB and be used in the RP, which makes the development iteration slower and every change on spec requires re-havesting that is unaffordable.
 
 The second factor is the major issue of using stored file infos because it is impossible to maintain it to keep sync of spec and keep on redo the havesting process.
-We there retrieve data lazily when the dataset is viewed in the frontend.
+We therefore retrieve data lazily when the dataset is viewed in the frontend.
+
+#### Proto definition
+
+The `DatasetService` handle requests from client to further interact with data repositories.
+The `BrowseDataset` call send request with data repository url and dataset id, as response it returns 
+
+```protobuf
+syntax = "proto3";
+
+package dataset.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+service DatasetService {
+  // Lazily retrieve file hierarchy or file info for a dataset
+  rpc BrowseDataset(BrowseDatasetRequest)
+      returns (stream BrowseDatasetResponse);
+}
+
+message BrowseDatasetRequest {
+  // Data repo identifier (opaque to client) 
+  string datarepo_url = 1;
+
+  // Dataset identifier (opaque to client)
+  string dataset_id = 2;
+}
+
+message DatasetResponse {
+  oneof event {
+    DatasetInfo dataset_info = 1;
+    FileEntry file_entry = 2;
+    BrowseProgress progress = 3;
+    BrowseError error = 4;
+    BrowseComplete complete = 5;
+  }
+}
+```
+
 
 ## Miscellanous
 
@@ -174,8 +221,15 @@ From use case perspective, I need some design from frontend to have a proper int
 - combine `view` and `run` button to have actually run VRE inside the view page.
 - the `view` is now redirect to the source, IMO it is better called "source", and "view" replace "run" as mentioned above.
 
+### Misc 003: requirement and design commend on file-type/tool registries
+
+The requst packager getting available tool information from tool registry and available type information from type registry. 
+These two services are supposed manage by one org (cyfronet now, which is good). 
+When new entries arrived, they need to cross validate if the tool's claim are i.e. meet with all the types.
+
 ## Ideas
 
 Collect ideas which are in low-priority.
 
 - Lazy scanning zip/tar file in the dataset on demand, have a sever (filemetrix??) to streaming the decompress and provide a lazy load (these may need some scalability).
+
