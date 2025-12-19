@@ -599,7 +599,9 @@ name = "req_packager"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "prost-types",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
