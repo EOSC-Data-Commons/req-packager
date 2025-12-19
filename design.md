@@ -2,11 +2,12 @@
 
 The design notes contains RFCs and miscellaneous notes that will eventually be incorporated into the official PDF[1] and published on project page [2].
 Every time an RFC is merged, the Typest PDF needs to be updated accordingly.
-The design here is supposed to comform with more broad package spec written in [3].
+The design here is supposed (try best) to comform with more broad package spec written in [3][4] (both of them still have lots open questions to discuss, see the comments there).
 
 [1]: https://typst.app/project/rohTQ0J9ibtW6gosRyDHnc
 [2]: https://confluence.egi.eu/display/EOSCDATACOMMONS
 [3]: https://docs.google.com/document/d/1I2Z_87dYCLflf7LmJnkFWB9Y4oa6Esdv8vifhqyp-n8/edit?usp=sharing
+[4]: https://confluence.egi.eu/display/EOSCDATACOMMONS/Packager
 
 ## Roadmaps
 
@@ -68,7 +69,7 @@ This approach improves separation of concerns, reduces frontend complexity, and 
 
 The Request Packager (RP) needs to communicate with multiple components in the system, including the frontend and the dispatcher. 
 Communication is often bidirectional, which would require polling if implemented using a traditional REST API. 
-gRPC offers native support for bidirectional streaming, making it a more suitable solution for this type of interaction.
+gRPC offers native support for bidirectional streaming (or at least server-to-client), making it a more suitable solution for this type of interaction.
 
 gRPC, like REST APIs, is language-agnostic, allowing the frontend to be implemented in JavaScript while backend components remain in Python. 
 This aligns with the system's design goals of language interoperability and flexibility.
@@ -77,6 +78,11 @@ gRPC is designed for streaming large payloads.
 Compared to REST APIs, it uses a binary protocol over HTTP/2, which enables more efficient data transfer and lower latency.
 This opens up the possibility of handling files without requiring the dispatcher to communicate directly with all data repositories. 
 Instead, the request packager can be introduced as a service to manage medium-sized files (approximately 1–100 MB) and forward them to subsequent VRE operations.
+
+gRPC don't have head-of-line (HOL) blocking (in the HTTP level for different streams).
+It is therefore much suitable for incremental client-server communication which is one of a requst in the [API design note](https://confluence.egi.eu/display/EOSCDATACOMMONS/Packager) by Wim.
+With the possibility that we want small file can be directly stream to the EOSC and expose to user to open in the lightweight tools, this no HOL blocking is a must to have feature. 
+Moreover, when it comes to enable user to provide required files by streaming to the target service where the file size might be large.
 
 #### Proposal
 
@@ -130,18 +136,21 @@ There are two divergence for how VRE allocate resources:
 2. VRE callback EOSC for resources. It was mentioned that egi's resources should at certain point be able to be integrated and to be used by the WP7 partners. This require description on such VRE and on type of resources they can use.
 3. VRE callback other tool in the registry for resources. This might be out of scope but can be a useful case that tools not only the tool for data processing but can be resource tools that anounce to owning and providing computational resources. 
 
-## Components
+## Components (functional requirements)
 
 ### Component 001
 
-Client send dataset metadata, server use input to retrieve futher files hierarchy or file info of files in the dataset.
+Look at: https://github.com/EOSC-Data-Commons/req-packager/pull/2/commits/52ec8cf0b011353e1e8e9086511c7417a3d14352.
+This part of rfc will be moved to the corresponded PR.
+
+Client send dataset metadata, server use input to retrieve futher files hierarchy or info of files in the dataset.
 
 There are two options of getting file info in the dataset:
 
 - More detailed file information is already havested and stored in the database.
 - The information is retrieved lazily from data repository.
 
-By storing information in the database can make display very responsive, however with following downsides:
+By storing all file metadata information in the database can make display very responsive, however with following downsides:
 
 - The file info is get in the havesting phase thus might out of sync with data repository (or if a data repository is offline temporarily).
 - Extra specs requires on describing how data store in the DB and be used in the RP, which makes the development iteration slower and every change on spec requires re-havesting that is unaffordable.
@@ -157,7 +166,7 @@ The `BrowseDataset` call send request with data repository url and dataset id, a
 ```protobuf
 syntax = "proto3";
 
-package dataset.v1;
+package req_packager.v1;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
@@ -169,7 +178,7 @@ service DatasetService {
 }
 
 message BrowseDatasetRequest {
-  // Data repo identifier (opaque to client) 
+  // Data repo url (opaque to client) 
   string datarepo_url = 1;
 
   // Dataset identifier (opaque to client)
@@ -187,6 +196,27 @@ message DatasetResponse {
 }
 ```
 
+(rfc)
+
+`FileEntry` is similar to unix file socket that can reflect both file and folder. 
+In the context of scientific data repository usually the dataset are "flatten" with files.
+But this not prevent from having a virtual hierarchy such as HDF4/NetCDF/Zip format has internal easy to access hierarchy for quick file accessing.
+The `FileEntry` type match this idea to tell the client "this is a virtual folder, I am not showing the inner files at the moment so open me if you want to check inner hierarchy."
+
+## Non-functional requirements
+
+### Scalability
+
+One of a major assumptions we made for the scalability that influence other designs is that are two part of services in the RP, one is for coordination, and the other is for temporary file storing.
+The coordinate service provided by RP are mostly lightweight message broker operations, thus scale poorly.
+The temporary file storing on the other hands require horizontal scaling (~10M per opened dataset).
+
+This assumpotion makes it possible that the communication part of RP can be just one unix process to handles ~10,1000 / per second requests.
+RP sit in the middle of multiple components of the EOSC system, thus any delay in the communication might become the bottleneck.
+Therefore, RP does not connect to the dataset DB but do it behind filemetrix, because of DB operations are usually not very cheap.
+
+The file storing service (see the corresponding section.xx) need to scale with number of opened datasets. 
+Or ideally, if the filemetrix component is good enough to take the responsibility of this task, then the RP can be with just a pure coordination service without the need to scale.
 
 ## Miscellanous
 
