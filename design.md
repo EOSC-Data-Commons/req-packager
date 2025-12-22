@@ -51,6 +51,8 @@ The RP interfaces with the following components:
 - tool-registry, who provides VREs/tools capabilities declared for dealing with different type of dataset.
 
 By introducing the RP as an explicit middleware layer, the frontend is decoupled from the dispatcher's internal APIs and operational complexity. 
+The request packager assemble the metadata package incrementally and send to the dispatcher for VRE.
+It avoids the package (the ro-crate no matter in which format), the data stream goes from RP to frontend and then from frontend to dispatcher.
 All communication, orchestration, and adaptation logic required for scalability and interoperability is centralized in the RP.
 
 The proposed interaction flow is:
@@ -106,7 +108,7 @@ Files smaller than 1 MB are scanned automatically, while larger files require us
 By default, only 100 files are displayed. 
 If the dataset contains more, the page shows the number of additional files and allows the user to trigger loading of all files. Every dataset view page provides a VRE button to open the dataset as a folder in a platform-like environment.
 
-### RFC 003: Multi-Stage Tool/VRE Preparing Flow
+### RFC 003: Multi-stage tool/VRE preparing flow
 
 #### Motivation
 
@@ -135,6 +137,56 @@ There are two divergence for how VRE allocate resources:
 1. VRE provide resources (CPU/GPU) themselves, this in relatively easy from ECD point of view because after dispatcher deligate the launch signal it become all VRE's responsibility to handle the further works.
 2. VRE callback EOSC for resources. It was mentioned that egi's resources should at certain point be able to be integrated and to be used by the WP7 partners. This require description on such VRE and on type of resources they can use.
 3. VRE callback other tool in the registry for resources. This might be out of scope but can be a useful case that tools not only the tool for data processing but can be resource tools that anounce to owning and providing computational resources. 
+
+### RFC 004: incremental client-side configuration with server side payload assembly
+
+#### Motivation
+
+This RFC proposes a design for a gRPC based configuration service where the client incrementally provides configuration information, and the server performs validation and assembles the full payload for downstream consumption. 
+The goal is to optimize user experience while keeping server logic manageable and minimizing unnecessary client-side complexity.
+
+Currently, we have two approaches to collecting configuration data for generating RO-Crate payloads:
+
+Client-side full assembly: 
+
+The client collects all configuration information, assembles it into a structure (e.g., `HashMap`), and sends it to the server in a single request.
+
+- Pros: Fewer RPC calls, simpler server logic.
+- Cons: Client bears full memory of user inputs, parsing complexity, delayed feedback on validation errors.
+
+Server-side incremental assembly: 
+The client sends partial configuration updates via multiple RPC calls; the server validates and updates its internal state after each call.
+
+- Pros: Incremental validation, immediate feedback, thin client.
+- Cons: Server must maintain per-client state, more RPC calls, increased complexity for session management and consistency.
+
+#### Proposal
+
+We use a hybrid solution, that is in the client side adding more logic to interactive getting input to construct a data structure of VRE description.
+The client side dealing with basic inputs validation on the required fields and their types. 
+The client side validation is localized in parameter correlation, because we would assume user may give inputs in random orders, and it is hard to validate the relation interactively.
+On the server side the full constructed object is send to be validated.
+The server side validation can also validate the relation of inputs.
+
+The object of VRE description (term "metadata" is used in other EDC proposals) is a serializable data structure that can send to the server side over TCP wire.
+It contains all the information required to describe how a VRE is prepared, which data should be attached and what resources can be use.
+The object is cross validated on the server side before assemble to a JSON payload (ro-crate). 
+
+To cover the different tool/VRE types described in the [RFC 003](#RFC-003-Multi-stage-tool-VRE-preparing-flow) the object (named as `VirtualResearchEnv`) need to be an enum type include subtypes:
+- `EoscInline`: tool that opened inline in the page, these tool are provided by the EOSC infra for inspect single file. (out of scope, but in my opinion, easy to implemented and useful).
+- `BrowserNative`: tool that redirect to 3rd-party site with the selected files (therefore a proper authorization is needed), such tools are usually lightweight that using users local resource (JS/WASM) and do not need to specify resources.
+- `Hosted`: VRE that need VM resources and already have resources attached by the VRE provider (e.g. RRP, Galaxy, AiiDAlab).
+- `HostedWithPluginRes`: (placeholder, use case not yet clear) similar to `Hosted` but the tool is flexible to use resources provided from resource provider (cloud with credential etc.). Or such VRE type can run platform with their own resource but need extra resource from resource provider (e.g. if RRP can request for a HPC resource specified). This also partially fit requirement of "Haddock3" use case.
+- `HostedWithBuiltInRes`: (placeholder, use case not yet clear) similar to `HostedWithPluginRes`, but by default use EOSC builtin resources.
+
+For two phases validation, the dadicate validation service is required with a specification on how validator is provided by tool provider when registering tool.
+This description needs to be in a human-writable format, because it is supposed to be provided by who registering the tool/VRE. 
+It requires field description and rule set with an expression support DSL to describe the relation cross context. 
+For the validator description, it deserve a dedicate RFC on it, see RFC005 on the requirement for this validator definition.
+
+### RFC 005: Declarative client/server validation specification
+
+placeholder
 
 ## Components (functional requirements)
 
@@ -241,6 +293,7 @@ From use case perspective, I need some design from dispatch to interop with and 
 - a sever protocol for dynamic new tool registry and auto tool scan and loading without intrusive release and deployment cycle on the dispatcher repo.
 - if the dispatcher is stick with restAPI, the server push with a callback may required, or the long polling (user experience and performance is not good).
 - user may ask for many VREs at the same time, therefore the preparing progress information need to be record/updated in dispatch and able to be displayed back to frontend. 
+- VRE cancellation.
 
 ### Misc 002: requirement and design comment on frontend
 
