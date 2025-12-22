@@ -186,7 +186,11 @@ For the validator description, it deserve a dedicate RFC on it, see RFC005 on th
 
 ### RFC 005: Declarative client/server validation specification
 
-placeholder
+placeholder, basic ideas, 
+- need schema for fields with type validation, need rule-set for cross fields validation using common expression language (CEL).
+- the basic format is yaml, which is more writable than JSON.
+- the documentation with lots of complete examples are essential for such helper DSL.
+- the description do not need to specify and separates client and server, it is automatically have locallized field validation on client and cross-fields validation on server.
 
 ## Components (functional requirements)
 
