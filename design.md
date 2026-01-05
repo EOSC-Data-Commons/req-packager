@@ -24,7 +24,7 @@ All mocked components will require more robust, production-quality implementatio
 
 #### Motivation
 
-The EOSC Data Commons (EDC) architecture is composed of two primary subsystems: the matchmaker, responsible for data discovery and querying, and the data player, responsible for executing operations on selected data within a Virtual Research Environment (VRE). 
+The EOSC Data Commons (EDC) architecture is composed of two primary subsystems: the `matchmaker`, responsible for data discovery and querying, and the `dataplayer`, responsible for executing operations on selected data within a Virtual Research Environment (VRE). 
 These subsystems have a clear conceptual boundary.
 
 Currently, the frontend acts as the primary bridge between the matchmaker and the data player. 
@@ -32,7 +32,7 @@ This places excessive responsibility on client-side code that runs in the user's
 Embedding orchestration and integration logic in the frontend limits scalability, complicates maintenance, and tightly couples the UI to backend APIs.
 
 In addition, key backend components such as the dispatcher and filemetrix services are expected to handle significant workloads. 
-The dispatcher manages authentication (now it did, is that proper?) and coordination across multiple data repositories and VRE providers, while filemetrix may perform compute-intensive tasks such as metadata adaptation and file streaming. 
+The dispatcher manages its own authentication (now it did, is that proper?) and coordination across multiple data repositories and VRE providers, while filemetrix (matchmaker talk to filemetrix's APIs) may perform compute-intensive tasks such as metadata adaptation and file streaming. 
 Direct frontend interaction with these services increases coupling and hinders system evolution.
 
 A dedicated middleware layer is therefore required to decouple the frontend from these backend services and to centralize orchestration logic.
@@ -52,7 +52,7 @@ The RP interfaces with the following components:
 
 By introducing the RP as an explicit middleware layer, the frontend is decoupled from the dispatcher's internal APIs and operational complexity. 
 The request packager assemble the metadata package incrementally and send to the dispatcher for VRE.
-It avoids the package (the ro-crate no matter in which format), the data stream goes from RP to frontend and then from frontend to dispatcher.
+It avoids the package (formated as as ro-crate payload no matter in which spec), the data stream goes from RP to frontend and then from frontend to dispatcher.
 All communication, orchestration, and adaptation logic required for scalability and interoperability is centralized in the RP.
 
 The proposed interaction flow is:
@@ -82,7 +82,7 @@ This opens up the possibility of handling files without requiring the dispatcher
 Instead, the request packager can be introduced as a service to manage medium-sized files (approximately 1–100 MB) and forward them to subsequent VRE operations.
 
 gRPC don't have head-of-line (HOL) blocking (in the HTTP level for different streams).
-It is therefore much suitable for incremental client-server communication which is one of a requst in the [API design note](https://confluence.egi.eu/display/EOSCDATACOMMONS/Packager) by Wim.
+It is therefore much suitable for incremental client-server communication which is one of requirements in the [API design note](https://confluence.egi.eu/display/EOSCDATACOMMONS/Packager) by Wim.
 With the possibility that we want small file can be directly stream to the EOSC and expose to user to open in the lightweight tools, this no HOL blocking is a must to have feature. 
 Moreover, when it comes to enable user to provide required files by streaming to the target service where the file size might be large.
 
@@ -98,15 +98,32 @@ This ensures efficient communication, supports streaming large payloads, and fac
 File-level information is the most critical data for the Request Packager (RP) to prepare datasets for VRE execution. 
 However, this information is not fully stored in the harvested database (maybe it can? under discussion in WP4). 
 Even if the database contains partial information, retrieving the actual file types or content requires streaming parts of the files, which is expensive and inefficient to perform during harvesting.
+The requst packager requires only very little information of the dataset (url), and perform a further lazy files hierarchy inspection when needed.
+This makes the files information that processes later by user always up to date and more importantly avoid relying on the not yet finalized spec on what info to store for every dataset.
 
 #### Proposal
 
 File information should be accessed lazily through filemetrix when the user interacts with the dataset, rather than pre-fetching all details. 
 When a user opens a dataset after clicking run (or view), a new page is loaded. 
 All files are scanned asynchronously to prepare a Ready-to-Play button and a Customize button for VRE/tool selection. 
-Files smaller than 1 MB are scanned automatically, while larger files require user-triggered scanning. 
+Files smaller than 1 MB are scanned automatically (the mime-type usually is unknow in the file info entry, because it is too expensive for filemetrix to get mime type by scanning), while larger files require user-triggered scanning. 
 By default, only 100 files are displayed. 
-If the dataset contains more, the page shows the number of additional files and allows the user to trigger loading of all files. Every dataset view page provides a VRE button to open the dataset as a folder in a platform-like environment.
+If the dataset contains more, the page shows the number of additional files and allows the user to trigger loading of all files. 
+This requires a bilateral rpc call that from client side pagination request can keep on sending.
+Every dataset's view page provides a VRE button to open the dataset as a folder in a platform-like (e.g. RRP, Galaxy) environments.
+
+If the `req_packager` need to take care of the download and store the file, it worth to also considering how files are stored and cached.
+This is based on how most data repository provide file entries information, usually filemetrix is not able to get all those information completely.
+If I need to download large files for scanning and deducting the mime-type or scanning the compressed file for hierarchy, the file need to be either in the memory or somewhere in the filesystem of the server.
+
+There are two cases.
+a) the mime-type is known in the data repository by filemetrix, the returned file entry info contain the mime-type and `req_packager` can use directly. 
+In this case, the download button trigger the api that relay the file transfer from filemetrix to client and the tools are deduct from mime-type.
+The relay can save the storage but might be not have consistent implementation as below case, so for prototype the file is download and stored anyway.
+b) the mime-type is unknown, and the file is known to be very small (<10k). 
+In this case, the file is automatically transfered from data repository to `req_packager` server and stored in the `/tmp/` (is this good?) and scanned to get/validate the checksum and mime-type.
+c) the mime-type is unknow, but the file is quite large.
+In this case, it is client's option to trigger the downloading and scanning, before that it only contains the filename but no further operations available before scanning.
 
 ### RFC 003: Multi-stage tool/VRE preparing flow
 
@@ -173,7 +190,7 @@ It contains all the information required to describe how a VRE is prepared, whic
 The object is cross validated on the server side before assemble to a JSON payload (ro-crate). 
 
 To cover the different tool/VRE types described in the [RFC 003](#RFC-003-Multi-stage-tool-VRE-preparing-flow) the object (named as `VirtualResearchEnv`) need to be an enum type include subtypes:
-- `EoscInline`: tool that opened inline in the page, these tool are provided by the EOSC infra for inspect single file. (out of scope, but in my opinion, easy to implemented and useful).
+- `EoscInline`: tool that opened inline in the page, these tool are provided by the EOSC infra for inspect single file. (out of scope, but in my opinion, easy to implement and useful).
 - `BrowserNative`: tool that redirect to 3rd-party site with the selected files (therefore a proper authorization is needed), such tools are usually lightweight that using users local resource (JS/WASM) and do not need to specify resources.
 - `Hosted`: VRE that need VM resources and already have resources attached by the VRE provider (e.g. RRP, Galaxy, AiiDAlab).
 - `HostedWithPluginRes`: (placeholder, use case not yet clear) similar to `Hosted` but the tool is flexible to use resources provided from resource provider (cloud with credential etc.). Or such VRE type can run platform with their own resource but need extra resource from resource provider (e.g. if RRP can request for a HPC resource specified). This also partially fit requirement of "Haddock3" use case.
