@@ -12,6 +12,8 @@ name = "rp_client"
 path = "src/client.rs"
 
 [dependencies]
+anyhow = "1.0.100"
+async-trait = "0.1.89"
 prost = "0.14.1"
 prost-types = "0.14.1"
 serde = "1.0.228"
