@@ -31,9 +31,9 @@ message BrowseDatasetResponse {
   BrowsePhase phase = 1;
 
   oneof event {
-    // summury or basic metadata 
+    // summury or basic metadata, send once at PHASE_INIT
     DatasetInfo dataset_info = 2;
-    // entry entity of file
+    // entry entity of file, send at PHASE_BROWSING
     FileEntry file_entry = 3;
     // progress for how much is done already
     BrowseProgress progress = 4;
@@ -60,24 +60,29 @@ message DatasetInfo {
 
 // structure partially borrow from unix file handler
 message FileEntry {
-  // abs path, root from dataset
+  // abs path, root from dataset, include the basename.
   string path = 1;
-  // basename
-  string name = 2;
   // no matter basename or path ended with '/' or not, this is the only source of truth on 
   // it is a file or dir
-  bool is_dir = 3;
-
+  bool is_dir = 2;
   // size in bytes
-  uint64 size_bytes = 4;
+  uint64 size_bytes = 3;
   // mime_type, unset if unknown
-  optional string mime_type = 5;
+  optional string mime_type = 4;
   // checksum, sha256
-  optional string checksum = 6;
+  optional string checksum = 5;
 
   // latest time the file is modified
-  google.protobuf.Timestamp modified_at = 7;
+  google.protobuf.Timestamp modified_at = 6;
 }
+
+message FileChunk {
+  // which file this chunk belongs to, abs path, root from dataset, include the basename.
+  string path = 1;       
+  // actual content bytes
+  bytes data = 2;        
+}
+
 
 message BrowseProgress {
   uint64 files_scanned = 1;
@@ -86,7 +91,7 @@ message BrowseProgress {
   // 0-100
   uint32 percent = 3;
   // path of file in processing 
-  string path = 4;
+  optional string path = 4;
 }
 
 message BrowseError {
@@ -96,6 +101,8 @@ message BrowseError {
     UNKNOWN = 0;
     // DATASET is not available, for example, havester create the entry but the data repo might offline etc.
     INVALID_DATASET = 1;
+    UNAVAILABLE_FILEMETRIX = 2;
+    UNAVAILABLE_FILE = 3;
     // IO_ERROR
     // TIMEOUT (for single file or for one dataset??)
   }
@@ -104,7 +111,7 @@ message BrowseError {
   string message = 2;
 
   // path of file under processing where error raised
-  string path = 3;
+  optional string path = 3;
   // if fatal bail the browse process, otherwise can continue on other files.
   bool fatal = 4;
 }
