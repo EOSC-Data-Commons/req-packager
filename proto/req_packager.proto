@@ -5,11 +5,26 @@ package req_packager.v1;
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
 
+// service related to dataset, and anything talk to filemetrix
 service DatasetService {
   // Lazily retrieve file hierarchy or file info for a dataset
   rpc BrowseDataset(BrowseDatasetRequest)
     returns (stream BrowseDatasetResponse);
+
+  // rpc DownloadFile(DownloadFileRequest)
+  //   returns (stream FileChunk);
 }
+
+// service ToolService {
+//   rpc BrowseTools(BrowseToolsRequest)
+//     returns (stream BrowseToolsResponse);
+// }
+
+// // get decisios from client to assemble the crate to dispatcher
+// service AssembleService {
+//   rpc AssembleCrate(AssembleCrateRequest)
+//     returns (AssembleCrateResponse);
+// }
 
 message BrowseDatasetRequest {
   // Data repo identifier by url (opaque to client)

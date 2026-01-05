@@ -178,6 +178,7 @@ impl DatasetService for Packager {
                     }))
                     .await
                 {
+                    // Err
                     let err = BrowseError {
                         code: ErrorCode::UnavailableFile as i32,
                         message: format!("unable to send file: {repo_url} - id: {id} - file: {filepath} to client, because of: {err}"),
@@ -191,13 +192,30 @@ impl DatasetService for Packager {
                     .await
                     .ok();
                 } else {
+                    // Ok
                     files_count += 1;
                     bytes_count += sizebytes;
+                    tx.send(Ok(BrowseDatasetResponse {
+                        phase: BrowsePhase::PhaseBrowsing as i32,
+                        event: Some(Event::Progress(req_packager::BrowseProgress {
+                            files_scanned: files_count,
+                            bytes_scanned: bytes_count,
+                            #[allow(clippy::cast_possible_truncation)]
+                            percent: (files_count / dataset_info.total_files() * 100) as u32,
+                            path: None,
+                        })),
+                    }))
+                    .await
+                    .ok();
                 };
 
                 // TODO: further operations include:
-                // 1. file download.
-                // 2. relay file to the VREs.
+                // 1. file download, provide here? yes and calling scanning for mime-type and
+                //    checksum automatically if the file is small (this rely on the file size must
+                //    know beforehead).
+                // 3. mime type deduct?? should this purely be the responsibility of filemetrix??
+                //    (yes here)
+                // 2. relay file to the VREs? in a separated step? (in the seprated step)
             }
 
             let success = files_count == dataset_info.total_files()
