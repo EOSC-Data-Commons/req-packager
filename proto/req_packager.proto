@@ -5,6 +5,24 @@ package req_packager.v1;
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
 
+// structure partially borrow from unix file handler
+message FileEntry {
+  // abs path, root from dataset, include the basename.
+  string path = 1;
+  // no matter basename or path ended with '/' or not, this is the only source of truth on 
+  // it is a file or dir
+  bool is_dir = 2;
+  // size in bytes
+  uint64 size_bytes = 3;
+  // mime_type, unset if unknown
+  optional string mime_type = 4;
+  // checksum, sha256
+  optional string checksum = 5;
+
+  // latest time the file is modified
+  google.protobuf.Timestamp modified_at = 6;
+}
+
 // service related to dataset, and anything talk to filemetrix
 service DatasetService {
   // Lazily retrieve file hierarchy or file info for a dataset
@@ -20,17 +38,61 @@ service DatasetService {
 //     returns (stream BrowseToolsResponse);
 // }
 
-// // get decisios from client to assemble the crate to dispatcher
-// service AssembleService {
-//   rpc AssembleCrate(AssembleCrateRequest)
-//     returns (AssembleCrateResponse);
-// }
+// get decisios from client to assemble the crate to dispatcher
+service AssembleService {
+  rpc PackageAssemble(PackageAssembleRequest)
+    returns (PackageAssembleResponse);
+}
+
+// RFC 004
+enum VreTyp {
+  // Browser inline tool provided by Eosc
+  EoscInline = 0;
+  // Hosted Vre where resources are provided by the vre provider
+  Hosted = 1;
+}
+
+message VreEntry {
+  string id_vre = 1;
+  VreTyp vre_type = 2; 
+}
+
+
+// TODO: didn't cover the case that VRE require config files from user e.g. `.binder`
+message PackageAssembleRequest {
+  // vre entry
+  VreEntry vre_entry = 1;
+  // file entries, list of files selected and passed from client
+  repeated FileEntry file_entries = 2;
+}
+
+message VreHostedResp {
+  string tool_id = 1;
+  string url_callback = 2;
+  string version = 3;
+  // TODO: may need configuration, which can be a config file from request
+}
+
+// information for client to go to assets server to get the tool and launch
+message VreEoscInlineResp {
+  string tool_id = 1;
+  string url_entrypoint = 2;
+  string version = 3;
+}
+
+
+message PackageAssembleResponse {
+  oneof vre_resp {
+    VreEoscInlineResp eosc_inline = 1;
+    VreHostedResp hosted_inline = 2;
+  }
+}
 
 message BrowseDatasetRequest {
   // Data repo identifier by url (opaque to client)
-  string datarepo_url = 1;
+  string url_datarepo = 1;
   // Dataset identifier (opaque to client)
-  string dataset_id = 2;
+  string id_dataset = 2;
 }
 
 message BrowseDatasetResponse {
@@ -60,8 +122,8 @@ message BrowseDatasetResponse {
 }
 
 message DatasetInfo {
-  string repo_url = 1;
-  string dataset_id = 2;
+  string url_datarepo = 1;
+  string id_dataset = 2;
   string description = 3;
 
   optional uint64 total_files = 4;
@@ -71,24 +133,6 @@ message DatasetInfo {
   google.protobuf.Timestamp updated_at = 7;
 
   map<string, string> tags = 8;
-}
-
-// structure partially borrow from unix file handler
-message FileEntry {
-  // abs path, root from dataset, include the basename.
-  string path = 1;
-  // no matter basename or path ended with '/' or not, this is the only source of truth on 
-  // it is a file or dir
-  bool is_dir = 2;
-  // size in bytes
-  uint64 size_bytes = 3;
-  // mime_type, unset if unknown
-  optional string mime_type = 4;
-  // checksum, sha256
-  optional string checksum = 5;
-
-  // latest time the file is modified
-  google.protobuf.Timestamp modified_at = 6;
 }
 
 message FileChunk {

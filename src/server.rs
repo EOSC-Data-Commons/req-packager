@@ -33,9 +33,9 @@ fn current_timestamp() -> Timestamp {
 #[async_trait::async_trait]
 trait FilemetrixClient: Send + Sync + 'static {
     // get dataset information
-    async fn get_dataset_info(&self, repo_url: &str, id: &str) -> anyhow::Result<DatasetInfo>;
+    async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo>;
     // list files in the dataset
-    async fn list_files(&self, repo_url: &str, id: &str) -> anyhow::Result<Vec<FileEntry>>;
+    async fn list_files(&self, url_datarepo: &str, id: &str) -> anyhow::Result<Vec<FileEntry>>;
 }
 
 struct MockFilemetrixClient {}
@@ -48,11 +48,11 @@ impl MockFilemetrixClient {
 
 #[async_trait::async_trait]
 impl FilemetrixClient for MockFilemetrixClient {
-    async fn get_dataset_info(&self, repo_url: &str, id: &str) -> anyhow::Result<DatasetInfo> {
+    async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo> {
         let dataset_info = DatasetInfo {
             // mock all fields, they are from filemetrix API call.
-            repo_url: repo_url.to_string(),
-            dataset_id: id.to_string(),
+            url_datarepo: url_datarepo.to_string(),
+            id_dataset: id.to_string(),
             description: "example01".to_string(),
             total_files: None,
             total_size_bytes: None,
@@ -63,7 +63,7 @@ impl FilemetrixClient for MockFilemetrixClient {
         Ok(dataset_info)
     }
 
-    async fn list_files(&self, repo_url: &str, id: &str) -> anyhow::Result<Vec<FileEntry>> {
+    async fn list_files(&self, url_datarepo: &str, id: &str) -> anyhow::Result<Vec<FileEntry>> {
         todo!()
     }
 }
@@ -101,15 +101,15 @@ impl DatasetService for Packager {
         tokio::spawn(async move {
             // INIT Phase
             let req = request.get_ref();
-            let repo_url = &req.datarepo_url;
-            let id = &req.dataset_id;
+            let url_datarepo = &req.url_datarepo;
+            let id = &req.id_dataset;
 
-            let dataset_info = match filemetrix_client.get_dataset_info(repo_url, id).await {
+            let dataset_info = match filemetrix_client.get_dataset_info(url_datarepo, id).await {
                 Ok(info) => info,
                 Err(err) => {
                     let err = BrowseError {
                         code: ErrorCode::UnavailableFilemetrix as i32,
-                        message: format!("unable to get dataset info of url: {repo_url} - id: {id}, because of filemetrix error: {err}"),
+                        message: format!("unable to get dataset info of url: {url_datarepo} - id: {id}, because of filemetrix error: {err}"),
                         path: None,
                         fatal: true,
                     };
@@ -143,12 +143,12 @@ impl DatasetService for Packager {
             .ok();
 
             // Browsing, keep on sending file info of the dataset asynchronously
-            let files = match filemetrix_client.list_files(repo_url, id).await {
+            let files = match filemetrix_client.list_files(url_datarepo, id).await {
                 Ok(files) => files,
                 Err(err) => {
                     let err = BrowseError {
                         code: ErrorCode::UnavailableFilemetrix as i32,
-                        message: format!("unable to list files url: {repo_url} - id: {id}, because of filemetrix error: {err}"),
+                        message: format!("unable to list files url: {url_datarepo} - id: {id}, because of filemetrix error: {err}"),
                         path: None,
                         fatal: true,
                     };
@@ -181,7 +181,7 @@ impl DatasetService for Packager {
                     // Err
                     let err = BrowseError {
                         code: ErrorCode::UnavailableFile as i32,
-                        message: format!("unable to send file: {repo_url} - id: {id} - file: {filepath} to client, because of: {err}"),
+                        message: format!("unable to send file: {url_datarepo} - id: {id} - file: {filepath} to client, because of: {err}"),
                         path: None,
                         fatal: true,
                     };
