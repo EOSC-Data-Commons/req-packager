@@ -1,6 +1,16 @@
-pub mod req_packager {
+pub mod req_packager_rpc {
     tonic::include_proto!("req_packager.v1");
 }
+use crate::req_packager_rpc::{
+    assemble_service_server::{AssembleService, AssembleServiceServer},
+    browse_dataset_response::{BrowsePhase, Event},
+    browse_error::ErrorCode,
+    dataset_service_server::{DatasetService, DatasetServiceServer},
+    vre_entry::Vre,
+    BrowseComplete, BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, DatasetInfo,
+    FileEntry, PackageAssembleRequest, PackageAssembleResponse, VreEntry, VreEoscInline, VreHosted,
+    VreTyp,
+};
 
 use prost_types::Timestamp;
 use std::{
@@ -10,16 +20,10 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-
-use crate::req_packager::{
-    assemble_service_server::{AssembleService, AssembleServiceServer},
-    browse_dataset_response::{BrowsePhase, Event},
-    browse_error::ErrorCode,
-    dataset_service_server::{DatasetService, DatasetServiceServer},
-    BrowseComplete, BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, DatasetInfo,
-    FileEntry, PackageAssembleRequest, PackageAssembleResponse,
-};
 use tonic::{transport::Server, Request, Response, Status};
+use url::Url;
+
+use req_packager::VirtualResearchEnv;
 
 fn current_timestamp() -> Timestamp {
     let now = SystemTime::now()
@@ -133,7 +137,7 @@ impl DatasetService for DataRepoRelayer {
 
             tx.send(Ok(BrowseDatasetResponse {
                 phase: BrowsePhase::PhaseBrowsing as i32,
-                event: Some(Event::Progress(req_packager::BrowseProgress {
+                event: Some(Event::Progress(req_packager_rpc::BrowseProgress {
                     files_scanned: 0,
                     bytes_scanned: 0,
                     percent: 0,
@@ -198,7 +202,7 @@ impl DatasetService for DataRepoRelayer {
                     bytes_count += sizebytes;
                     tx.send(Ok(BrowseDatasetResponse {
                         phase: BrowsePhase::PhaseBrowsing as i32,
-                        event: Some(Event::Progress(req_packager::BrowseProgress {
+                        event: Some(Event::Progress(req_packager_rpc::BrowseProgress {
                             files_scanned: files_count,
                             bytes_scanned: bytes_count,
                             #[allow(clippy::cast_possible_truncation)]
@@ -239,15 +243,12 @@ impl DatasetService for DataRepoRelayer {
     }
 }
 
-struct ToolInfo {}
-struct ToolEntry {}
-
 #[async_trait::async_trait]
 trait ToolRegistryClient: Send + Sync + 'static {
     // get tool info by id
-    async fn get_tool_info(&self, id: &str) -> anyhow::Result<ToolInfo>;
+    async fn get_tool(&self, id: &str) -> anyhow::Result<VirtualResearchEnv>;
     // list tools in the registry, fine to return a Vec store in the ram can handle 10,000 entries.
-    async fn list_tools(&self) -> anyhow::Result<Vec<ToolEntry>>;
+    async fn list_tools(&self) -> anyhow::Result<Vec<VirtualResearchEnv>>;
 }
 
 struct MockToolRegistryClient {}
@@ -260,10 +261,43 @@ impl MockToolRegistryClient {
 
 #[async_trait::async_trait]
 impl ToolRegistryClient for MockToolRegistryClient {
-    async fn get_tool_info(&self, id: &str) -> anyhow::Result<ToolInfo> {
+    async fn get_tool(&self, id: &str) -> anyhow::Result<VirtualResearchEnv> {
         todo!()
     }
-    async fn list_tools(&self) -> anyhow::Result<Vec<ToolEntry>> {
+    async fn list_tools(&self) -> anyhow::Result<Vec<VirtualResearchEnv>> {
+        todo!()
+    }
+}
+
+// this is supposed to be the ro-crate that contain all information to launch the vre with required
+// data pointers, so dispatcher or vre (depends on design of the dispatcher) can access the data
+// without the needs to store data in the middleware.
+struct LaunchReq {
+    // blob: Type
+    id_vre: String,
+    files: Vec<FileEntry>,
+}
+
+struct InfoRequest {}
+
+#[async_trait::async_trait]
+trait DispatcherClient: Send + Sync + 'static {
+    // list all vre requests and their status
+    async fn check_user_requests(&self, id_user: String) -> anyhow::Result<Vec<InfoRequest>>;
+    // launch a vre with the launch request, return the callback url when it is ready
+    async fn launch(&self, p: LaunchReq) -> anyhow::Result<Url>;
+}
+
+struct MockDispatcherClient {}
+
+#[async_trait::async_trait]
+impl DispatcherClient for MockDispatcherClient {
+    async fn check_user_requests(&self, id_user: String) -> anyhow::Result<Vec<InfoRequest>> {
+        todo!()
+    }
+
+    // launch a vre with the launch request, return the callback url when it is ready
+    async fn launch(&self, p: LaunchReq) -> anyhow::Result<Url> {
         todo!()
     }
 }
@@ -279,10 +313,53 @@ impl AssembleService for ReqPackAssembler {
         request: Request<PackageAssembleRequest>,
     ) -> Result<Response<PackageAssembleResponse>, Status> {
         println!("Got a request: {request:?}");
-        tokio::spawn(async move {
-            // tool from tool registry and validate
-        });
-        todo!();
+        let tool_registry = Arc::clone(&self.tool_registry);
+
+        // tool from tool registry and validate
+        let req = request.get_ref();
+        let id_vre = &req.id_vre;
+        let files = &req.file_entries;
+
+        let tool = tool_registry.get_tool(id_vre).await.map_err(|e| {
+            // convert anyhow error to tonic status
+            println!("Failed to get tool from registry: {e:?}");
+            Status::internal(format!("Failed to get tool from registry: {e}"))
+        })?;
+
+        // TODO: assemble an ro-crate and send to dispatcher and get back the required vre callback
+        match tool {
+            VirtualResearchEnv::EoscInline { .. } => {
+                // check file number and simply relay (because I use same data structure for the
+                // tool registry api call) the entry to the client
+
+                // Inline tool only support passing one file, there might be use cases the tool
+                // processes multiple files, but impl that when the case comes.
+                if files.len() != 1 {
+                    let err_msg = format!(
+                        "inline tool only processes on one file, get: {}",
+                        files.len()
+                    );
+                    // TODO: proper tracing log
+                    println!("{err_msg}");
+                    return Err(Status::internal(err_msg));
+                }
+
+                // vre that not through dispatcher.
+                let resp = PackageAssembleResponse {
+                    vre_entry: Some(vre_entry),
+                };
+                Ok(Response::new(resp))
+            }
+            VirtualResearchEnv::Hosted { .. } => {
+                // assamble a package and send to dispatcher that return a callback url
+
+                // TODO: can check if the quota reached, users should not allowed to launch
+                // infinit amount of vres (avoiding ddos).
+
+                todo!()
+            }
+            _ => unimplemented!(),
+        }
     }
 }
 
