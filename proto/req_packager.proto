@@ -54,19 +54,22 @@ enum VreTyp {
 
 message VreEntry {
   string id_vre = 1;
-  VreTyp vre_type = 2; 
+  string version = 2;
+  oneof vre {
+    VreEoscInline vre_eosc_inline = 3;
+    VreHosted vre_hosted = 4;
+  }
 }
-
 
 // TODO: didn't cover the case that VRE require config files from user e.g. `.binder`
 message PackageAssembleRequest {
-  // vre entry
-  VreEntry vre_entry = 1;
+  // vre entry id
+  string id_vre = 1;
   // file entries, list of files selected and passed from client
   repeated FileEntry file_entries = 2;
 }
 
-message VreHostedResp {
+message VreHosted {
   string tool_id = 1;
   string url_callback = 2;
   string version = 3;
@@ -74,18 +77,14 @@ message VreHostedResp {
 }
 
 // information for client to go to assets server to get the tool and launch
-message VreEoscInlineResp {
+message VreEoscInline {
   string tool_id = 1;
   string url_entrypoint = 2;
   string version = 3;
 }
 
-
 message PackageAssembleResponse {
-  oneof vre_resp {
-    VreEoscInlineResp eosc_inline = 1;
-    VreHostedResp hosted_inline = 2;
-  }
+   VreEntry vre_entry = 1;
 }
 
 message BrowseDatasetRequest {
