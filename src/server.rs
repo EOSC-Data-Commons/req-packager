@@ -12,11 +12,12 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::req_packager::{
+    assemble_service_server::{AssembleService, AssembleServiceServer},
     browse_dataset_response::{BrowsePhase, Event},
     browse_error::ErrorCode,
     dataset_service_server::{DatasetService, DatasetServiceServer},
     BrowseComplete, BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, DatasetInfo,
-    FileEntry,
+    FileEntry, PackageAssembleRequest, PackageAssembleResponse,
 };
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -68,7 +69,7 @@ impl FilemetrixClient for MockFilemetrixClient {
     }
 }
 
-pub struct Packager {
+pub struct DataRepoRelayer {
     // TODO: source of tool-registry, mocked by a JSON, in production can be just tool-registry
     // API call address.
     // TODO: source of type-registry, mocked by a JSON
@@ -83,7 +84,7 @@ pub struct Packager {
 // logic, then I can do the same no matter for filemetrix, or self directy service, or mocked test.
 #[allow(clippy::too_many_lines)]
 #[tonic::async_trait]
-impl DatasetService for Packager {
+impl DatasetService for DataRepoRelayer {
     type BrowseDatasetStream = ReceiverStream<Result<BrowseDatasetResponse, Status>>;
 
     /// browse dataset through filemetrix API calls.
@@ -238,6 +239,53 @@ impl DatasetService for Packager {
     }
 }
 
+struct ToolInfo {}
+struct ToolEntry {}
+
+#[async_trait::async_trait]
+trait ToolRegistryClient: Send + Sync + 'static {
+    // get tool info by id
+    async fn get_tool_info(&self, id: &str) -> anyhow::Result<ToolInfo>;
+    // list tools in the registry, fine to return a Vec store in the ram can handle 10,000 entries.
+    async fn list_tools(&self) -> anyhow::Result<Vec<ToolEntry>>;
+}
+
+struct MockToolRegistryClient {}
+
+impl MockToolRegistryClient {
+    fn new() -> Self {
+        MockToolRegistryClient {}
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolRegistryClient for MockToolRegistryClient {
+    async fn get_tool_info(&self, id: &str) -> anyhow::Result<ToolInfo> {
+        todo!()
+    }
+    async fn list_tools(&self) -> anyhow::Result<Vec<ToolEntry>> {
+        todo!()
+    }
+}
+
+pub struct ReqPackAssembler {
+    tool_registry: Arc<dyn ToolRegistryClient>,
+}
+
+#[tonic::async_trait]
+impl AssembleService for ReqPackAssembler {
+    async fn package_assemble(
+        &self,
+        request: Request<PackageAssembleRequest>,
+    ) -> Result<Response<PackageAssembleResponse>, Status> {
+        println!("Got a request: {request:?}");
+        tokio::spawn(async move {
+            // tool from tool registry and validate
+        });
+        todo!();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
@@ -246,13 +294,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (however there is not too much query needed, just index visiting).
     // con: the packager need to be initialized, how freq it happens to take latest list?
     //
-    let filemetrix_client = Arc::new(MockFilemetrixClient::new());
-    let packager = Packager {
-        filemetrix: filemetrix_client,
-    };
+    let filemetrix = Arc::new(MockFilemetrixClient::new());
+    let relayer = DataRepoRelayer { filemetrix };
+
+    let tool_registry = Arc::new(MockToolRegistryClient::new());
+    let assembler = ReqPackAssembler { tool_registry };
 
     Server::builder()
-        .add_service(DatasetServiceServer::new(packager))
+        .add_service(DatasetServiceServer::new(relayer))
+        .add_service(AssembleServiceServer::new(assembler))
         .serve(addr)
         .await?;
     Ok(())
