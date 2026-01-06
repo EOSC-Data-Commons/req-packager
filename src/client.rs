@@ -9,11 +9,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = DatasetServiceClient::connect("http://[::1]:50051").await?;
 
     // made up repo url and dataset id, should be mocked for test
-    let datarepo_url = "http://onedata.com".to_string();
-    let dataset_id = "xxx-pid".to_string();
+    let url_datarepo = "http://onedata.com".to_string();
+    let id_dataset = "xxx-pid".to_string();
     let request = tonic::Request::new(BrowseDatasetRequest {
-        datarepo_url,
-        dataset_id,
+        url_datarepo,
+        id_dataset,
     });
 
     let mut stream = client.browse_dataset(request).await?.into_inner();
