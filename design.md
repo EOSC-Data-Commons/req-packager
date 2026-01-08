@@ -32,7 +32,7 @@ This places excessive responsibility on client-side code that runs in the user's
 Embedding orchestration and integration logic in the frontend limits scalability, complicates maintenance, and tightly couples the UI to backend APIs.
 
 In addition, key backend components such as the dispatcher and filemetrix services are expected to handle significant workloads. 
-The dispatcher manages its own authentication (now it did, is that proper?) and coordination across multiple data repositories and VRE providers, while filemetrix (matchmaker talk to filemetrix's APIs) may perform compute-intensive tasks such as metadata adaptation and file streaming. 
+The dispatcher manages its own authentication (for now, should be moved to the upper layer) and coordination across multiple data repositories and VRE providers, while filemetrix (matchmaker talk to filemetrix's APIs) may perform compute-intensive tasks such as metadata adaptation and file streaming. 
 Direct frontend interaction with these services increases coupling and hinders system evolution.
 
 A dedicated middleware layer is therefore required to decouple the frontend from these backend services and to centralize orchestration logic.
@@ -98,7 +98,7 @@ This ensures efficient communication, supports streaming large payloads, and fac
 File-level information is the most critical data for the Request Packager (RP) to prepare datasets for VRE execution. 
 However, this information is not fully stored in the harvested database (maybe it can? under discussion in WP4). 
 Even if the database contains partial information, retrieving the actual file types or content requires streaming parts of the files, which is expensive and inefficient to perform during harvesting.
-The requst packager requires only very little information of the dataset (url), and perform a further lazy files hierarchy inspection when needed.
+The requst packager requires only very little information of the dataset (url), and perform (this should be the done by filemetrix) a further lazy files hierarchy inspection when needed.
 This makes the files information that processes later by user always up to date and more importantly avoid relying on the not yet finalized spec on what info to store for every dataset.
 
 #### Proposal
@@ -124,6 +124,14 @@ b) the mime-type is unknown, and the file is known to be very small (<10k).
 In this case, the file is automatically transfered from data repository to `req_packager` server and stored in the `/tmp/` (is this good?) and scanned to get/validate the checksum and mime-type.
 c) the mime-type is unknow, but the file is quite large.
 In this case, it is client's option to trigger the downloading and scanning, before that it only contains the filename but no further operations available before scanning.
+Download means the file goes from filemetrix to client, while scan means the file goes to server and be scanned.
+
+#### TBD
+
+Tasks like file scanning can happened in filemetrix, instead of spend storage in the server of request packager.
+Not sure `filemetrix` will support it, if it is not, need to add support to that or do it in RP.
+It is actually good to have this supported in the filemetrix side, because the scanning will extract file information such as mime-type that can be reuse.
+Otherwise, RP will manage the scan with the lifetime attach to the client session or client TCP connection. 
 
 ### RFC 003: Multi-stage tool/VRE preparing flow
 
@@ -159,38 +167,43 @@ There are two divergence for how VRE allocate resources:
 
 #### Motivation
 
-This RFC proposes a design for a gRPC based configuration service where the client incrementally provides configuration information, and the server performs validation and assembles the full payload for downstream consumption. 
-The goal is to optimize user experience while keeping server logic manageable and minimizing unnecessary client-side complexity.
+This RFC proposes a design for a gRPC based configuration service in which the client incrementally provides configuration information, while the server performs validation and assembles the full payload for downstream consumption. 
+The primary goals are to improve user experience through early and continuous validation, reduce client-side complexity, and keep server-side logic structured and maintainable.
 
-Currently, we have two approaches to collecting configuration data for generating RO-Crate payloads:
+Currently, there are two main approaches to collecting configuration data for generating RO-Crate payloads:
 
-Client-side full assembly: 
+Approach 1: Client-side full assembly: 
 
 The client collects all configuration information, assembles it into a structure (e.g., `HashMap`), and sends it to the server in a single request.
 
 - Pros: Fewer RPC calls, simpler server logic.
 - Cons: Client bears full memory of user inputs, parsing complexity, delayed feedback on validation errors.
 
-Server-side incremental assembly: 
-The client sends partial configuration updates via multiple RPC calls; the server validates and updates its internal state after each call.
+Approach 2: Server-side incremental assembly: 
+The client sends partial configuration updates through multiple RPC calls. After each update, the server validates the inputs and updates its internal representation of the configuration state.
 
 - Pros: Incremental validation, immediate feedback, thin client.
 - Cons: Server must maintain per-client state, more RPC calls, increased complexity for session management and consistency.
 
 #### Proposal
 
-We use a hybrid solution, that is in the client side adding more logic to interactive getting input to construct a data structure of VRE description.
-The client side dealing with basic inputs validation on the required fields and their types. 
-The client side validation is localized in parameter correlation, because we would assume user may give inputs in random orders, and it is hard to validate the relation interactively.
-On the server side the full constructed object is send to be validated.
-The server side validation can also validate the relation of inputs.
+We adopt a hybrid solution that combines enhanced client-side interaction with server-side validation.
 
-The object of VRE description (term "metadata" is used in other EDC proposals) is a serializable data structure that can send to the server side over TCP wire.
+On the client side, additional logic is introduced to support interactive input collection and to incrementally construct a structured VRE description (referred to as metadata in other EDC proposals). The client is responsible for:
+- Performing basic validation of required fields and their data types.
+- Ensuring local consistency for parameters that can be validated independently.
+
+However, client-side validation is intentionally limited with respect to cross-parameter relationships. 
+Since users may provide inputs in arbitrary order, validating complex interdependencies interactively would introduce significant complexity and brittle logic on the client.
+
+Once the VRE description object is fully constructed, it is sent to the server for comprehensive validation.
+
+The object of VRE description (i.e. term "metadata" is used in other EDC proposals) is a serializable data structure that can send to the server side over TCP wires.
 It contains all the information required to describe how a VRE is prepared, which data should be attached and what resources can be use.
 The object is cross validated on the server side before assemble to a JSON payload (ro-crate). 
 
 To cover the different tool/VRE types described in the [RFC 003](#RFC-003-Multi-stage-tool-VRE-preparing-flow) the object (named as `VirtualResearchEnv`) need to be an enum type include subtypes:
-- `EoscInline`: tool that opened inline in the page, these tool are provided by the EOSC infra for inspect single file. (out of scope, but in my opinion, easy to implement and useful).
+- `EoscInline`: tool that opened inline in the page, these tool are provided by the EOSC infra for inspect single file. (out of scope, but in my opinion, easy to implement and useful). Inline tool does not need to requested from dispatcher.
 - `BrowserNative`: tool that redirect to 3rd-party site with the selected files (therefore a proper authorization is needed), such tools are usually lightweight that using users local resource (JS/WASM) and do not need to specify resources.
 - `Hosted`: VRE that need VM resources and already have resources attached by the VRE provider (e.g. RRP, Galaxy, AiiDAlab).
 - `HostedWithPluginRes`: (placeholder, use case not yet clear) similar to `Hosted` but the tool is flexible to use resources provided from resource provider (cloud with credential etc.). Or such VRE type can run platform with their own resource but need extra resource from resource provider (e.g. if RRP can request for a HPC resource specified). This also partially fit requirement of "Haddock3" use case.
@@ -200,6 +213,10 @@ For two phases validation, the dadicate validation service is required with a sp
 This description needs to be in a human-writable format, because it is supposed to be provided by who registering the tool/VRE. 
 It requires field description and rule set with an expression support DSL to describe the relation cross context. 
 For the validator description, it deserve a dedicate RFC on it, see RFC005 on the requirement for this validator definition.
+
+For the `EoscInline` tool, we need a place to store the tools, thus an asset server is required.
+
+It therefore need two rpc calls, one using bilateral streaming rpc for client-server interactions to get all inputs from user, the other use static rpc to assemble and validate the final ro-crate.
 
 ### RFC 005: Declarative client/server validation specification
 
@@ -213,23 +230,25 @@ placeholder, basic ideas,
 
 ### Component 001
 
-Look at: https://github.com/EOSC-Data-Commons/req-packager/pull/2/commits/52ec8cf0b011353e1e8e9086511c7417a3d14352.
+This is the component service for browsing dataset so the client can display it very responsive.
+
+Look at: https://github.com/EOSC-Data-Commons/req-packager/pull/2/commits/49b61649829193c090cd1450a64d61903e4c0fe1
 This part of rfc will be moved to the corresponded PR.
 
 Client send dataset metadata, server use input to retrieve futher files hierarchy or info of files in the dataset.
 
 There are two options of getting file info in the dataset:
 
-- More detailed file information is already havested and stored in the database.
+- Most of detailed file information is already havested and stored in the database.
 - The information is retrieved lazily from data repository.
 
 By storing all file metadata information in the database can make display very responsive, however with following downsides:
 
-- The file info is get in the havesting phase thus might out of sync with data repository (or if a data repository is offline temporarily).
-- Extra specs requires on describing how data store in the DB and be used in the RP, which makes the development iteration slower and every change on spec requires re-havesting that is unaffordable.
+- The file info is retrieved in the havesting phase thus might out of sync with data repository (or if a data repository is offline temporarily).
+- Extra specs requires on describing how data store in the DB and be used in the RP, which makes the development iteration slower and every change on spec which requires re-havesting and it might be unaffordable.
 
-The second factor is the major issue of using stored file infos because it is impossible to maintain it to keep sync of spec and keep on redo the havesting process.
-We therefore retrieve data lazily when the dataset is viewed in the frontend.
+The second factor might the major issue of using stored file infos because it is impossible to maintain it to keep sync of spec and keep on redo the havesting process.
+However, this addon the complexity to the filemetrix to do the scanning of files which cost storage space and requires properly caching management.
 
 #### Proto definition
 
@@ -275,6 +294,96 @@ message DatasetResponse {
 In the context of scientific data repository usually the dataset are "flatten" with files.
 But this not prevent from having a virtual hierarchy such as HDF4/NetCDF/Zip format has internal easy to access hierarchy for quick file accessing.
 The `FileEntry` type match this idea to tell the client "this is a virtual folder, I am not showing the inner files at the moment so open me if you want to check inner hierarchy."
+
+It is defined as:
+
+```protobuf
+// structure partially borrow from unix file handler
+message FileEntry {
+  // abs path, root from dataset, include the basename.
+  string path = 1;
+  // no matter basename or path ended with '/' or not, this is the only source of truth on 
+  // it is a file or dir
+  bool is_dir = 2;
+  // size in bytes
+  uint64 size_bytes = 3;
+  // mime_type, unset if unknown
+  optional string mime_type = 4;
+  // checksum, sha256
+  optional string checksum = 5;
+
+  // latest time the file is modified
+  google.protobuf.Timestamp modified_at = 6;
+}
+```
+
+The fields `path`, `is_dir`, `size_bytes` and `modified_at` are cheap to retrieve by accessing the dataset in the data repo.
+The fields `mime_type` and `checksum` is retrieved lazily. (is filemetrix want to provide this? TBD)
+
+### Component 002
+
+This is the assembler component service for returning an entry point to redirect to a running VRE.
+
+Look at: https://github.com/EOSC-Data-Commons/req-packager/blob/6bce9a58032e51bbba048f178441b482f4405e7e/proto/req_packager.proto#L42-L45
+This part of component rfc will be moved to the corresponded PR.
+
+Client side is ready with all information from user about which VRE to use and which datas/files to attach for the open VRE.
+This assembler component either directly launch the inline tool or talk to dispatcher to launch a VRE.
+As return, the client side get the all information so the frontend can immediatly open the VRE.
+
+### Proto definition
+
+```protobuf
+// get decisios from client to assemble the crate to dispatcher
+service AssembleService {
+  rpc PackageAssemble(PackageAssembleRequest)
+    returns (PackageAssembleResponse);
+}
+
+// RFC 004
+enum VreTyp {
+  // Browser inline tool provided by Eosc
+  EoscInline = 0;
+  // Hosted Vre where resources are provided by the vre provider
+  Hosted = 1;
+}
+
+// respose from assembler for client to redirect to the launched vre
+message VreHosted {
+  string url_callback = 1;
+  // TODO: may need configuration, which can be a config file from request
+}
+
+// information for client to go to assets server to get the tool and launch
+message VreEoscInline {
+  string url_callback = 1;
+  // support single file to open with inline tool
+  FileEntry file_entry = 2;
+}
+
+
+// this is what response to client about the vre entity it can utilize.
+message VreEntry {
+  string id_vre = 1;
+  string version = 2;
+  oneof entry_point {
+    VreEoscInline eosc_inline = 3;
+    VreHosted hosted = 4;
+  }
+}
+
+// TODO: didn't cover the case that VRE require config files from user e.g. `.binder`
+message PackageAssembleRequest {
+  // vre entry id
+  string id_vre = 1;
+  // file entries, list of files selected and passed from client
+  repeated FileEntry file_entries = 2;
+}
+
+message PackageAssembleResponse {
+   VreEntry vre_entry = 1;
+}
+```
 
 ## Non-functional requirements
 
@@ -325,15 +434,45 @@ From use case perspective, I need some design from frontend to have a proper int
 - combine `view` and `run` button to have actually run VRE inside the view page.
 - the `view` is now redirect to the source, IMO it is better called "source", and "view" replace "run" as mentioned above.
 
-### Misc 003: requirement and design commend on file-type/tool registries
+### Misc 003: requirement and design comment on file-type/tool registries
 
-The requst packager getting available tool information from tool registry and available type information from type registry. 
-These two services are supposed manage by one org (cyfronet now, which is good). 
-When new entries arrived, they need to cross validate if the tool's claim are i.e. meet with all the types.
+The requst packager gets available tool information from the tool registry and available type information from the type registry.
+These two services are managed by one org (cyfronet now, which is good). 
+
+(TODO, should be written with more context, i.e. how this mimic linux's xdg mime-type works) When new tool or file-type entries added, they need to cross validate if the tool's claim are i.e. meet with all the types.
+
+### Misc 004: requirement and design comment on filemetrix
+
+Related to component-001.
+The question is how much detail information is able to be given by the filemetrix, the assumption that it return full FileEntry with both resolved checksum and mime-type can be a bit aggressive.
+Therefore I put `checksum` and `mime-type` 
+
+```protobuf
+// structure partially borrow from unix file handler
+message FileEntry {
+  // abs path, root from dataset, include the basename.
+  string path = 1;
+  // no matter basename or path ended with '/' or not, this is the only source of truth on 
+  // it is a file or dir
+  bool is_dir = 2;
+  // size in bytes
+  uint64 size_bytes = 3;
+  // mime_type, unset if unknown
+  optional string mime_type = 4;
+  // checksum, sha256
+  optional string checksum = 5;
+
+  // latest time the file is modified
+  google.protobuf.Timestamp modified_at = 6;
+}
+```
+
+### Misc 005: requirements on authenticatino server
 
 ## Ideas
 
 Collect ideas which are in low-priority.
 
-- Lazy scanning zip/tar file in the dataset on demand, have a sever (filemetrix??) to streaming the decompress and provide a lazy load (these may need some scalability).
+- Lazy scanning zip/tar file in the dataset on demand, have a server (filemetrix??) to streaming the decompress and provide a lazy load (these may need some scalability).
+- for ro-crate validation, do it incrementally a tool to define the client side requirements (without the dependencies of the fields) of ro-crate and the file integrate requirements validation (with the dependencies constrains of fields).
 
