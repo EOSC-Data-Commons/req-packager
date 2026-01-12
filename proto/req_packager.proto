@@ -52,12 +52,27 @@ enum VreTyp {
   Hosted = 1;
 }
 
+// respose from assembler for client to redirect to the launched vre
+message VreHosted {
+  string url_callback = 1;
+  // TODO: may need configuration, which can be a config file from request
+}
+
+// information for client to go to assets server to get the tool and launch
+message VreEoscInline {
+  string url_callback = 1;
+  // support single file to open with inline tool
+  FileEntry file_entry = 2;
+}
+
+
+// this is what response to client about the vre entity it can utilize.
 message VreEntry {
   string id_vre = 1;
   string version = 2;
-  oneof vre {
-    VreEoscInline vre_eosc_inline = 3;
-    VreHosted vre_hosted = 4;
+  oneof entry_point {
+    VreEoscInline eosc_inline = 3;
+    VreHosted hosted = 4;
   }
 }
 
@@ -67,20 +82,6 @@ message PackageAssembleRequest {
   string id_vre = 1;
   // file entries, list of files selected and passed from client
   repeated FileEntry file_entries = 2;
-}
-
-message VreHosted {
-  string tool_id = 1;
-  string url_callback = 2;
-  string version = 3;
-  // TODO: may need configuration, which can be a config file from request
-}
-
-// information for client to go to assets server to get the tool and launch
-message VreEoscInline {
-  string tool_id = 1;
-  string url_entrypoint = 2;
-  string version = 3;
 }
 
 message PackageAssembleResponse {
