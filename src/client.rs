@@ -1,8 +1,4 @@
-pub mod req_packager {
-    tonic::include_proto!("req_packager.v1");
-}
-
-use req_packager::{dataset_service_client::DatasetServiceClient, BrowseDatasetRequest};
+use req_packager::grpc::{dataset_service_client::DatasetServiceClient, BrowseDatasetRequest};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
