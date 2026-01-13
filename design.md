@@ -65,6 +65,139 @@ The proposed interaction flow is:
 
 This approach improves separation of concerns, reduces frontend complexity, and provides a scalable and maintainable integration point between core EDC subsystems.
 
+The architecture diagram before and after this change is shown as below.
+
+Old architecture where matchmaker communicates with all sub-services:
+
+```mermaid
+sequenceDiagram
+  participant EU as End User
+  participant UI as User Interface
+  participant DCSearch as Data Commons Search
+  participant LLM as LLM model
+  participant FR as File Registry
+  participant TR as Tools Registry
+  participant Packager as Request Packager
+  participant Player as EOSC Data Player
+
+  EU ->> UI: Natural Language Query
+  activate EU
+  activate UI
+  UI ->> DCSearch: Perform search
+  activate DCSearch
+  DCSearch ->> LLM: Perform Inference
+  activate LLM
+  LLM -->> DCSearch: Return results
+  deactivate LLM
+  DCSearch -->> UI: Search results
+  deactivate DCSearch
+  deactivate UI
+
+  EU ->> UI: Select dataset
+  activate UI
+  UI ->> FR: request file metadata
+  activate FR
+  FR -->> UI: file metadata
+  deactivate FR
+  UI ->> TR: Request matching tools
+  activate TR
+  TR --> UI: matching tools
+  deactivate TR
+  EU ->> UI: Request deployment of analysis for selected dataset
+  UI ->> Packager: Request Package for processing dataset
+  activate Packager
+  Packager -->> UI: Return package
+  deactivate Packager
+  UI ->> Player: Deploy package
+  activate Player
+  Player -->> UI: Deployment ID
+  UI->>Player: Get deployment status
+  Player -->> UI: Update deployment status
+  UI->>Player: Get deployment status
+  Player -->> UI: Complete Request
+  Player ->> UI: Return analysis URL
+  deactivate Player
+  UI->> EU: Analysis Result
+  deactivate UI
+
+  deactivate EU
+```
+
+New architecture where request packager coordinates in between:
+
+```mermaid
+sequenceDiagram
+  participant EU as End User
+  participant UI as User Interface
+  participant DCSearch as Data Commons Search
+  participant LLM as LLM model
+  participant RP as Request Packager
+  participant FR as File Registry
+  participant TR as Tools Registry
+  participant Player as EOSC Data Player
+
+  EU ->> UI: Natural Language Query
+  activate EU
+  activate UI
+  UI ->> DCSearch: Perform search
+  activate DCSearch
+  DCSearch ->> LLM: Perform Inference
+  activate LLM
+  LLM -->> DCSearch: Return results
+  deactivate LLM
+  DCSearch -->> UI: Search results
+  deactivate DCSearch
+  UI -->> EU: Display search results
+  deactivate UI
+
+  EU ->> UI: Select dataset
+  activate UI
+  UI ->> RP: list files in dataset (promise)
+  activate RP
+  RP -> FR: request metadata of files
+  activate FR
+  FR -->> RP: metadata of files
+  deactivate FR
+  RP -->> UI: list of files (streaming)
+  RP ->> TR: Request matching tools / VREs
+  activate TR
+  TR -->> RP: matching tools / VREs
+  deactivate TR
+  RP -->> UI: available tools for each file
+  EU ->> UI: open a file with selected builtin tool
+  UI ->> RP: request for the builtin tool with file entry attached
+  RP ->> Player: fetch the tool (inline WASM/JS)
+  activate Player
+  Player ->> RP: tool is ready
+  deactivate Player
+  RP -->> UI: inline instructions for rendering tool with data
+  UI -->> EU: Open file with the tool inline in the page
+  RP -->> UI: tools for VREs
+  deactivate RP
+  UI -->> EU: Display recommended VREs
+  deactivate UI
+
+  EU ->> UI: Select and launch a VRE for selected dataset
+  activate UI 
+  UI ->> RP: Request the selected VRE for processing dataset
+  activate RP
+  RP ->> Player: Deploy package
+  activate Player
+  Player -->> RP: Deployment ID
+  RP->>Player: Get deployment status
+  Player -->> RP: Update deployment status
+  RP->>Player: Get deployment status
+  Player -->> RP: Complete Request
+  Player ->> RP: Return analysis URL
+  deactivate Player
+  RP->> UI: Analysis Result
+  deactivate RP
+  UI->> EU: Display running Result
+  deactivate UI
+
+  deactivate EU
+```
+
 ### RFC 001: gRPC over REST API
 
 #### Motivation
@@ -443,6 +576,10 @@ These two services are managed by one org (cyfronet now, which is good).
 
 ### Misc 004: requirement and design comment on filemetrix
 
+It is neither enough to have request packager talk to original dataset source, nor to talk to file metadata DB.
+One of a major use cases is a dataset with files metadata in the DB are outdated and requires to go to original source to update.
+Instead of having request talk to them respectively, the filemetrix is assumed to carry those functionalities. 
+
 Related to component-001.
 The question is how much detail information is able to be given by the filemetrix, the assumption that it return full FileEntry with both resolved checksum and mime-type can be a bit aggressive.
 Therefore I put `checksum` and `mime-type` 
@@ -467,7 +604,7 @@ message FileEntry {
 }
 ```
 
-### Misc 005: requirements on authenticatino server
+### Misc 005: requirements on authentication server
 
 ## Ideas
 
