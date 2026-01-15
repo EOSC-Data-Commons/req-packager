@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package req_packager.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// structure partially borrow from unix file handler
+message FileEntry {
+  // abs path, root from dataset, include the basename.
+  string path = 1;
+  // no matter basename or path ended with '/' or not, this is the only source of truth on 
+  // it is a file or dir
+  bool is_dir = 2;
+  // size in bytes
+  uint64 size_bytes = 3;
+  // mime_type, unset if unknown
+  optional string mime_type = 4;
+  // checksum, sha256
+  optional string checksum = 5;
+
+  // latest time the file is modified
+  google.protobuf.Timestamp modified_at = 6;
+}
+
+// service related to dataset, and anything talk to filemetrix
+service DatasetService {
+  // Lazily retrieve file hierarchy or file info for a dataset
+  rpc BrowseDataset(BrowseDatasetRequest)
+    returns (stream BrowseDatasetResponse);
+
+  // rpc DownloadFile(DownloadFileRequest)
+  //   returns (stream FileChunk);
+}
+
+// service ToolService {
+//   rpc BrowseTools(BrowseToolsRequest)
+//     returns (stream BrowseToolsResponse);
+// }
+
+// get decisios from client to assemble the crate to dispatcher
+service AssembleService {
+  rpc PackageAssemble(PackageAssembleRequest)
+    returns (PackageAssembleResponse);
+}
+
+// RFC 004
+enum VreTyp {
+  // Browser inline tool provided by Eosc
+  EoscInline = 0;
+  // Hosted Vre where resources are provided by the vre provider
+  Hosted = 1;
+}
+
+// respose from assembler for client to redirect to the launched vre
+message VreHosted {
+  string url_callback = 1;
+  // TODO: may need configuration, which can be a config file from request
+}
+
+// information for client to go to assets server to get the tool and launch
+message VreEoscInline {
+  string url_callback = 1;
+  // support single file to open with inline tool
+  FileEntry file_entry = 2;
+}
+
+
+// this is what response to client about the vre entity it can utilize.
+message VreEntry {
+  string id_vre = 1;
+  string version = 2;
+  oneof entry_point {
+    VreEoscInline eosc_inline = 3;
+    VreHosted hosted = 4;
+  }
+}
+
+// TODO: didn't cover the case that VRE require config files from user e.g. `.binder`
+message PackageAssembleRequest {
+  // vre entry id
+  string id_vre = 1;
+  // file entries, list of files selected and passed from client
+  repeated FileEntry file_entries = 2;
+}
+
+message PackageAssembleResponse {
+   VreEntry vre_entry = 1;
+}
+
+message BrowseDatasetRequest {
+  // Data repo identifier by url (opaque to client)
+  string url_datarepo = 1;
+  // Dataset identifier (opaque to client)
+  string id_dataset = 2;
+}
+
+message BrowseDatasetResponse {
+  // Server MUST send dataset_info as first message at INIT phase
+  // Server MUST not send any more messages after COMPLETE phase
+  enum BrowsePhase {
+    PHASE_UNSPECIFIED = 0;
+    PHASE_INIT = 1;
+    PHASE_BROWSING = 2;
+    PHASE_COMPLETED = 3;
+  }
+
+  BrowsePhase phase = 1;
+
+  oneof event {
+    // summury or basic metadata, send once at PHASE_INIT
+    DatasetInfo dataset_info = 2;
+    // entry entity of file, send at PHASE_BROWSING
+    FileEntry file_entry = 3;
+    // progress for how much is done already
+    BrowseProgress progress = 4;
+    // if any error happing when browsing
+    BrowseError error = 5;
+    // complete signal
+    BrowseComplete complete = 6;
+  }
+}
+
+message DatasetInfo {
+  string url_datarepo = 1;
+  string id_dataset = 2;
+  string description = 3;
+
+  optional uint64 total_files = 4;
+  optional uint64 total_size_bytes = 5;
+
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+
+  map<string, string> tags = 8;
+}
+
+message FileChunk {
+  // which file this chunk belongs to, abs path, root from dataset, include the basename.
+  string path = 1;       
+  // actual content bytes
+  bytes data = 2;        
+}
+
+
+message BrowseProgress {
+  uint64 files_scanned = 1;
+  uint64 bytes_scanned = 2;
+
+  // 0-100
+  uint32 percent = 3;
+  // path of file in processing 
+  optional string path = 4;
+}
+
+message BrowseError {
+  enum ErrorCode {
+    // UNKNOWN at the moment cover most of errors, more specific error type will be added 
+    // when it is clear on which errors might happen.
+    UNKNOWN = 0;
+    // DATASET is not available, for example, havester create the entry but the data repo might offline etc.
+    INVALID_DATASET = 1;
+    UNAVAILABLE_FILEMETRIX = 2;
+    UNAVAILABLE_FILE = 3;
+    // IO_ERROR
+    // TIMEOUT (for single file or for one dataset??)
+  }
+
+  ErrorCode code = 1;
+  string message = 2;
+
+  // path of file under processing where error raised
+  optional string path = 3;
+  // if fatal bail the browse process, otherwise can continue on other files.
+  bool fatal = 4;
+}
+
+message BrowseComplete {
+  uint64 total_files = 1;
+  uint64 total_size_bytes = 2;
+
+  bool success = 3;
+  google.protobuf.Timestamp finish_at = 4;
+}
