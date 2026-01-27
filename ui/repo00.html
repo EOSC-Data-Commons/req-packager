@@ -1,0 +1,97 @@
+<ul class="tree" id="tree">
+  <li>
+    <details data-path="a-repo-example" open>
+      <summary>
+        <span class="folder" data-path="doi:base/example/dataset">base dataset</span>
+      </summary>
+      <ul>
+        <li class="file" data-path="src/main.ts">
+          <span class="name">main.ts</span>
+          <span class="meta">
+            <span class="type">ts</span>
+            <span class="size">12 KB</span>
+          </span>
+          <!-- tool button for file -->
+          <button 
+            class="tool-btn" 
+            data-path="__ROOT__/files/main.ts" 
+            title="preview" 
+            hx-get="files/main.ts"
+            hx-target="#file-preview-content"
+            hx-swap="innerHTML">
+            preview
+          </button>
+          <!-- dropdown button -->
+          <div class="dropdown">
+            <button class="dropdown-btn" data-action="toggle-dropdown">Tools ▾</button>
+            <div class="dropdown-content">
+              <button data-action="open-file" data-path="files/main.ts">
+                Tool x
+              </button>
+              <button onclick="console.log('Tool 2 clicked')">Tool 2</button>
+              <button onclick="console.log('Tool 3 clicked')">Tool 3</button>
+            </div>
+          </div>
+          <button data-action="download-file" data-path="files/main.ts">
+            Download
+          </button>
+        </li>
+        <li class="file" data-path="src/dummy.tar.gz">
+          <span class="name">dummy.tar.gz</span>
+          <span class="meta">
+            <span class="type">tar.gz</span>
+            <span class="size">20 KB</span>
+          </span>
+          <!-- tool button for file -->
+          <!-- <button  -->
+          <!--   class="tool-btn"  -->
+          <!--   data-path="__ROOT__/files/dummy.tar.gz"  -->
+          <!--   title="preview"  -->
+          <!--   hx-get="files/dummy.tar.gz" -->
+          <!--   hx-target="#file-preview-content" -->
+          <!--   hx-swap="innerHTML"> -->
+          <!--   preview -->
+          <!-- </button> -->
+          <!-- dropdown button -->
+          <div class="dropdown">
+            <button class="dropdown-btn" data-action="toggle-dropdown">Tools ▾</button>
+            <div class="dropdown-content">
+              <button data-action="open-file" data-path="files/dummy.tar.gz">
+                Tool x
+              </button>
+              <button onclick="console.log('Tool 2 clicked')">Tool 2</button>
+              <button onclick="console.log('Tool 3 clicked')">Tool 3</button>
+            </div>
+          </div>
+          <button data-action="download-file" data-path="files/dummy.tar.gz">
+            Download
+          </button>
+        </li>
+        <li class="file" data-path="src/data.csv">
+          <span class="name">data.csv</span>
+          <span class="meta">
+            <span class="type">csv</span>
+            <span class="size">2.1 MB</span>
+          </span>
+          <button class="tool-btn" data-path="src/data.csv" title="preview">preview</button>
+        </li>
+        <li class="file" data-path="src/report.pdf">
+          <span class="name">report.pdf</span>
+          <span class="meta">
+            <span class="type">pdf</span>
+            <span class="size">840 KB</span>
+          </span>
+          <button class="tool-btn" data-path="src/report.pdf" title="preview">preview</button>
+        </li>
+        <li class="file" data-path="src/index.html">
+          <span class="name">index.html</span>
+          <span class="meta">
+            <span class="type">html</span>
+            <span class="size">6 KB</span>
+          </span>
+          <button class="tool-btn" data-path="src/index.html" title="preview">preview</button>
+        </li>
+      </ul>
+    </details>
+  </li>
+</ul>

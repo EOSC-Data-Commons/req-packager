@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>File List</title>
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+    <script>
+      // Toggle dropdowns
+      // TODO: move to the global click handler
+      document.addEventListener('click', function(e) {
+        // Toggle if clicked on a dropdown button
+        if (e.target.matches('.dropdown-btn')) {
+          const content = e.target.nextElementSibling;
+          const isOpen = content.style.display === 'block';
+
+          // Close all other dropdowns first
+          document.querySelectorAll('.dropdown-content').forEach(dc => {
+            if (dc !== content) dc.style.display = 'none';
+          });
+
+          // Toggle this one
+          content.style.display = isOpen ? 'none' : 'block';
+          e.stopPropagation();
+        } else {
+          // Close dropdowns if clicked outside
+          document.querySelectorAll('.dropdown-content').forEach(dc => dc.style.display = 'none');
+        }
+      });
+    </script>
+    <script>
+      // one global click handler
+      document.addEventListener('click', function (e) {
+        const actionEle = e.target.closest('[data-action]');
+        if (!actionEle) {
+          // click on unhandlable elements
+          closeAllDropdowns();
+          return;
+        }
+        switch (actionEle.dataset.action) {
+          case 'toggle-dropdown':
+            toggleDropdown(actionEle);
+            e.stopPropagation();
+            break;
+          case 'open-file':
+            openFile(actionEle);
+            break;
+          case 'download-file':
+            downloadFile(actionEle);
+            break;
+        }
+      });
+
+      function downloadFile(btn) {
+        const path = btn.dataset.path;
+
+        // Fetch the file as blob
+        fetch(path)
+          .then(res => res.blob())
+          .then(blob => {
+            // Force type to application/octet-stream
+            const url = URL.createObjectURL(new Blob([blob], { type: 'application/octet-stream' }));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = path.split('/').pop(); // filename
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          })
+          .catch(err => console.error('Download failed:', err));
+      }
+
+      function openFile(btn) {
+        const fileUrl = btn.dataset.path;
+        fetch(fileUrl).then(r => r.text()).then(t => {
+        const win = window.open('', '_blank');
+        win.document.write('<pre>' + t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>');
+        win.document.close();
+      });
+      }
+
+      function closeAllDropdowns() {
+        document
+          .querySelectorAll('.dropdown-content')
+          .forEach(dc => dc.style.display = 'none');
+      }
+
+      function toggleDropdown(btn) {
+        const content = btn.nextElementSibling;
+
+        closeAllDropdowns();
+        const isOpen = content.style.display == 'block';
+        console.log(isOpen);
+        content.style.display = isOpen ? 'none' : 'block';
+      }
+    </script>
+    <style>
+      ul.tree,
+      ul.tree ul {
+        list-style: none;
+        margin: 0;
+        padding-left: 1.2rem; /* keep indentation */
+      }
+      .htmx-indicator {
+          display: none;
+      }
+      .htmx-request .htmx-indicator {
+          display: inline;
+      }
+      .htmx-request.htmx-indicator {
+          display: inline;
+      }
+      #file-preview {
+        display: none;            /* hidden by default */
+        position: fixed;          /* float over the page */
+        top: 50%;                 /* vertically center */
+        left: 50%;                /* horizontally center */
+        transform: translate(-50%, -50%); /* center perfectly */
+        width: 60%;               /* modal width */
+        max-height: 70%;          /* don't go off screen vertically */
+        background: white;
+        border: 1px solid #ccc;
+        box-shadow: 0 0 15px rgba(0,0,0,0.5);
+        padding: 15px;
+        overflow: auto;           /* scroll if content is large */
+        z-index: 1000;            /* on top of everything */
+        border-radius: 6px;
+      }
+
+      /* Header with title and close button */
+      #file-preview-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      #file-preview-close {
+        cursor: pointer;
+        border: none;
+        background: none;
+        font-size: 18px;
+      }
+
+      /* Optional: make the code text look nice */
+      #file-preview-content {
+        white-space: pre-wrap;
+        font-family: monospace;
+        font-size: 14px;
+      }
+      body {
+        background-color: #54acce;
+        color: black;
+        font-family: Arial, sans-serif;
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      .file {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 5px;
+      }
+
+      .dropdown {
+        position: relative;
+        display: inline-block;
+      }
+
+      .dropdown-btn {
+        cursor: pointer;
+      }
+
+      .dropdown-content {
+        display: none;
+        position: absolute;
+        background-color: white;
+        min-width: 100px;
+        border: 1px solid #ccc;
+        z-index: 10;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        flex-direction: column;
+      }
+
+      .dropdown-content button {
+        width: 100%;
+        padding: 5px 10px;
+        border: none;
+        background: none;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .dropdown-content button:hover {
+        background-color: #f0f0f0;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Description</h2>
+    <div>
+      <p>
+        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+      </p>
+    </div>
+    <!-- Modal container -->
+    <div id="file-preview" style="display:none;">
+      <div id="file-preview-header">
+        <span id="file-preview-title"></span>
+        <button id="file-preview-close">✖</button>
+      </div>
+      <pre id="file-preview-content"></pre>
+    </div>
+    <script>
+      window.showModal = function(evt) {
+        console.log("showModal called", evt); // debug
+        const preview = document.getElementById("file-preview");
+        const btn = evt.target;
+        const path = btn.dataset.path;
+        document.getElementById("file-preview-title").textContent = path;
+        preview.style.display = "block";
+      };
+      // close btn
+      document.addEventListener("DOMContentLoaded", () => {
+        const closeBtn = document.getElementById("file-preview-close");
+        console.log("Close button element:", closeBtn);
+        closeBtn.addEventListener("click", () => {
+          console.log("Close button clicked");
+          document.getElementById("file-preview").style.display = "none";
+        });
+      });
+
+      document.body.addEventListener("htmx:afterSwap", function(evt) {
+        // evt.target is the element that was swapped
+        // Check if the swap was for a file preview
+        if (evt.target.id === "file-preview-content") {
+          console.log("afterSwap fired for file content");
+
+          // Find the button that triggered this swap
+          const btn = document.querySelector('.tool-btn[data-path]');
+          if (!btn) return;
+
+          const path = btn.dataset.path;
+          const preview = document.getElementById("file-preview");
+          document.getElementById("file-preview-title").textContent = path;
+          preview.style.display = "block";
+        }
+      });
+    </script>
+    <h2>Files</h2>
+    <div id="repos">
+      <div
+      hx-get="repo00.html"
+      hx-trigger="load"
+      hx-swap="innerHTML">
+        <span>Loading files…</span>
+        <img class="htmx-indicator" src="./assets/spinner.svg" alt="Loading">
+      </div>
+      <div id="file-list"></div>
+    </div>
+    <div class="input-row">
+      <input type="text" name="item[]" placeholder="https//github.com/eosc/ui-example">
+      <!-- "+" button triggers htmx request -->
+      <button
+        type="button"
+        hx-get="repo-new.html"
+        hx-target="#repos"
+        hx-swap="beforeend"
+        hx-on::after-request="console.log('Request completed', event.detail)">
+        +
+      </button>
+    </div>
+  </body>
+</html>
