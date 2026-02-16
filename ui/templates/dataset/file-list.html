@@ -1,0 +1,57 @@
+<ul class="tree" id="tree">
+  <li>
+    <details data-path="a-repo-example" open>
+      <summary>
+        <span class="folder" data-path="doi:base/example/dataset">base dataset repo: {{ id }} </span>
+      </summary>
+      <form 
+        id="vre-selection-form"
+        hx-post="/vre-recommend-from-files"
+        hx-trigger="change delay:400ms from:input[type=checkbox]"
+        hx-target="#vre-selection"
+        hx-swap="innerHTML"
+        >
+        <ul>
+          {% for file in files %}
+          <li class="file"">
+            <input 
+              type="checkbox"
+              name="{{file.filename}}"
+              value="{{ file.data_path }}"
+            />
+            <span class="name">{{ file.filename }}</span>
+            <span class="meta">
+              <span class="type">{{ file.mimetype }}</span>
+              <span class="size">{{ file.size }}</span>
+            </span>
+            <!-- tool button for file -->
+            <button 
+            class="tool-btn" 
+            title="preview" 
+            hx-get="{{ file.data_path }}"
+            hx-target="#file-preview"
+            hx-swap="outerHTML"
+            hx-vals='{"path": "__ROOT__{{ file.data_path }}"}'>
+              preview
+            </button>
+            <!-- dropdown button -->
+            <div class="dropdown">
+              <button onclick="console.log('dropdown')" class="dropdown-btn" data-action="toggle-dropdown" type="button">Open with ▾</button>
+              <div class="dropdown-content">
+                <button data-action="open-file" data-path="{{ file.data_path }}" type="button">
+                  Tool x
+                </button>
+                <button onclick="console.log('Tool 2 clicked')" type="button">Tool 2</button>
+                <button onclick="console.log('Tool 3 clicked')" type="button">Tool 3</button>
+              </div>
+            </div>
+            <button data-action="download-file" data-path="{{ file.data_path }}" type="button">
+              Download
+            </button>
+          </li>
+          {% endfor %}
+        </ul>
+      </form>
+    </details>
+  </li>
+</ul>

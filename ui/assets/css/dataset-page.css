@@ -110,6 +110,7 @@ body {
   gap: 24px;
   align-items: flex-start;
 }
+
 .files-layout {
   flex: 2; /* takes more space */
   min-width: 0; /* important for overflow */
@@ -117,13 +118,31 @@ body {
 
 .vre-layout {
   flex: 1; /* takes less space */
-  min-width: 250px;
+  min-width: 100px;
   padding-left: 16px;
 }
 .vre-panel {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.vre-description {
+  width: 100%;
+  overflow-wrap: break-word;   /* modern standard */
+  word-wrap: break-word;       /* legacy support */
+  word-break: break-word;      /* ensures long strings break */
+}
+
+.vre-description p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.vre-selection {
+  display: flex;
+  flex-direction: column; /* stack buttons inside selection */
+  gap: 12px;
 }
 
 .vre-slots {

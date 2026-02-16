@@ -4,14 +4,15 @@
     <meta charset="UTF-8">
     <title>File List</title>
     <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
-    <script type="module" src="./assets/js/main.js"></script>
-    <link rel="stylesheet" href="assets/css/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/json-enc.js"></script>
+    <script type="module" src="/assets/js/main.js"></script>
+    <link rel="stylesheet" href="/assets/css/dataset-page.css">
   </head>
   <body class="app">
     <h2>Description</h2>
     <div>
       <p>
-        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+        {{ dataset000.metadata.description }}
       </p>
     </div>
     <!-- Modal container -->
@@ -22,11 +23,11 @@
         <h2>Files</h2>
         <div id="repos">
           <div
-            hx-get="/repo"
+            hx-get="/datasets/{{ dataset000.metadata.id }}/repo"
             hx-trigger="load"
             hx-swap="innerHTML">
             <span>Loading files…</span>
-            <img class="htmx-indicator" src="./assets/spinner.svg" alt="Loading">
+            <img class="htmx-indicator" src="/assets/spinner.svg" alt="Loading">
           </div>
           <div id="file-list"></div>
         </div>
@@ -42,16 +43,14 @@
             +
           </button>
         </div>
-        <div id="vre-selection" class="vre-selection">
-          <!-- this part need to be updated upon files being selected -->
-          <div>
-            <button onclick="console.log('vre 1 clicked')" type="button" hx-get="/vre/1" hx-target="#vre" hx-swap="innerHTML">vre 1</button>
-            <button onclick="console.log('vre 2 clicked')">vre 2</button>
-          </div>
-        </div>
       </div>
-      <div class="vre-layout" id="vre">
-        <!-- placeholder for vre presentation   -->
+      <div id="vre-panel" class="vre-panel">
+        <div id="vre-selection" class="vre-selection">
+          <!-- placeholder for vre recommendation   -->
+        </div>
+        <div class="vre-layout" id="vre">
+          <!-- placeholder for vre presentation   -->
+        </div>
       </div>
     </div>
   </body>
