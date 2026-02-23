@@ -1,0 +1,185 @@
+ul.tree,
+ul.tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 1.2rem; /* keep indentation */
+}
+.htmx-indicator {
+  display: none;
+}
+.htmx-request .htmx-indicator {
+  display: inline;
+}
+.htmx-request.htmx-indicator {
+  display: inline;
+}
+#file-preview {
+  display: none; /* hidden by default */
+  position: fixed; /* float over the page */
+  top: 50%; /* vertically center */
+  left: 50%; /* horizontally center */
+  transform: translate(-50%, -50%); /* center perfectly */
+  width: 60%; /* modal width */
+  max-height: 70%; /* don't go off screen vertically */
+  background: white;
+  border: 1px solid #ccc;
+  box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+  padding: 15px;
+  overflow: auto; /* scroll if content is large */
+  z-index: 1000; /* on top of everything */
+  border-radius: 6px;
+}
+
+/* Header with title and close button */
+#file-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+#file-preview-close {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-size: 18px;
+}
+
+/* Optional: make the code text look nice */
+#file-preview-content {
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 14px;
+}
+body {
+  background-color: #54acce;
+  color: black;
+  font-family: Arial, sans-serif;
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.app {
+  max-width: 1200px;
+  width: 100%;
+  padding: 24px;
+}
+
+.file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-btn {
+  cursor: pointer;
+}
+
+.dropdown-content {
+  display: none;
+  position: absolute;
+  background-color: white;
+  min-width: 100px;
+  border: 1px solid #ccc;
+  z-index: 10;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  flex-direction: column;
+}
+
+.dropdown-content button {
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dropdown-content button:hover {
+  background-color: #f0f0f0;
+}
+.files-vre-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.files-layout {
+  flex: 2; /* takes more space */
+  min-width: 0; /* important for overflow */
+}
+
+.vre-layout {
+  flex: 1; /* takes less space */
+  min-width: 100px;
+  padding-left: 16px;
+}
+.vre-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.vre-description {
+  width: 100%;
+  overflow-wrap: break-word;   /* modern standard */
+  word-wrap: break-word;       /* legacy support */
+  word-break: break-word;      /* ensures long strings break */
+}
+
+.vre-description p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.vre-selection {
+  display: flex;
+  flex-direction: column; /* stack buttons inside selection */
+  gap: 12px;
+}
+
+.vre-slots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.vre-slot {
+  border: 2px dashed #bbb;
+  border-radius: 8px;
+  padding: 16px;
+  min-height: 40px;
+  background: #fafafa;
+
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+/* Hover / focus hint */
+.vre-slot:hover {
+  border-color: #4a7cff;
+  background-color: #f2f6ff;
+}
+
+.slot-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.slot-hint {
+  font-size: 0.9em;
+  color: #666;
+  text-align: center;
+}

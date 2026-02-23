@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>File List</title>
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/json-enc.js"></script>
+    <script type="module" src="/assets/js/main.js"></script>
+    <link rel="stylesheet" href="/assets/css/dataset-page.css">
+  </head>
+  <body class="app">
+    <h2>Description</h2>
+    <div>
+      <p>
+        {{ dataset000.metadata.description }}
+      </p>
+    </div>
+    <!-- Modal container -->
+    <div id="file-preview" style="display:none;">
+    </div>
+    <div class="files-vre-layout">
+      <div class="files-layout">
+        <h2>Files</h2>
+        <div id="repos">
+          <div
+            hx-get="/datasets/{{ dataset000.metadata.id }}/repo"
+            hx-trigger="load"
+            hx-swap="innerHTML">
+            <span>Loading files…</span>
+            <img class="htmx-indicator" src="/assets/spinner.svg" alt="Loading">
+          </div>
+          <div id="file-list"></div>
+        </div>
+        <div class="input-row">
+          <input type="text" name="item[]" placeholder="https//github.com/eosc/ui-example">
+          <!-- "+" button triggers htmx request -->
+          <button
+            type="button"
+            hx-get="/repo-additional"
+            hx-target="#repos"
+            hx-swap="beforeend"
+            hx-on::after-request="console.log('Request completed', event.detail)">
+            +
+          </button>
+        </div>
+      </div>
+      <div id="vre-panel" class="vre-panel">
+        <div id="vre-selection" class="vre-selection">
+          <!-- placeholder for vre recommendation   -->
+        </div>
+        <div class="vre-layout" id="vre">
+          <!-- placeholder for vre presentation   -->
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
