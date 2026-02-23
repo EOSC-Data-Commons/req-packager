@@ -606,6 +606,12 @@ message FileEntry {
 
 ### Misc 005: requirements on authentication server
 
+## Further requirements
+
+- Seb: there is use case for provide files from own data repo that is not online available (or the dataset that is not harvested by the EOSC datacommon).
+- This require some special design on how to provide the url with tokens that user can make request to these data repositories. The typical example is github private repository, with maybe another example from a private data repository in EOSC that I use datahugger to integrate it. This call by the end will cope by using datahugger-ng. 
+
+
 ## Ideas
 
 Collect ideas which are in low-priority.
