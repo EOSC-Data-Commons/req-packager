@@ -1,20 +1,27 @@
+use async_stream::stream;
+use futures_core::stream::BoxStream;
+use prost_types::Timestamp;
+use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
     grpc::{
-        assemble_service_server::AssembleServiceServer,
-        dataset_service_server::DatasetServiceServer, DatasetInfo, FileEntry,
+        self, assemble_service_server::AssembleServiceServer,
+        dataset_service_server::DatasetServiceServer,
     },
     DataRepoRelayer, DispatcherClient, FilemetrixClient, InfoRequest, LaunchRequset,
     ReqPackAssembler, ToolRegistryClient,
 };
 
-use prost_types::Timestamp;
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
 use std::{collections::HashMap, sync::Arc};
 use tonic::transport::Server;
 use url::Url;
 
 use req_packager::VirtualResearchEnv;
 
-#[derive(Debug)]
+#[derive(Clone)]
 struct Dataset {
     // XXX: I don't want to couple the grpc logic with business logic, so I need real type for both
     // datasetinfo and fileentry.
@@ -23,6 +30,8 @@ struct Dataset {
 }
 
 struct MockFilemetrixClient {
+    // the key is a tuple, where 1st element is for datarepo url and the second is the id of the
+    // dataset in the datarepo.
     datasets: HashMap<(String, String), Dataset>,
 }
 
@@ -32,7 +41,7 @@ impl MockFilemetrixClient {
             .into_iter()
             .map(|ds| {
                 let info = ds.info.clone();
-                let (url, id_ds) = (info.url_datarepo, info.id_dataset);
+                let (url, id_ds) = (info.url, info.id);
                 ((url, id_ds), ds)
             })
             .collect();
@@ -42,23 +51,51 @@ impl MockFilemetrixClient {
 
 #[async_trait::async_trait]
 impl FilemetrixClient for MockFilemetrixClient {
-    async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo> {
-        let dataset_info = DatasetInfo {
-            // mock all fields, they are from filemetrix API call.
-            url_datarepo: url_datarepo.to_string(),
-            id_dataset: id.to_string(),
-            description: "example01".to_string(),
-            total_files: None,
-            total_size_bytes: None,
-            created_at: Some(Timestamp::default()),
-            updated_at: Some(Timestamp::default()),
-            tags: HashMap::new(),
-        };
-        Ok(dataset_info)
+    async fn get_dataset_info(
+        &self,
+        url_datarepo: &str,
+        id: &str,
+    ) -> anyhow::Result<grpc::DatasetInfo> {
+        match self
+            .datasets
+            .get(&(url_datarepo.to_string(), id.to_string()))
+        {
+            Some(dataset) => {
+                let info = dataset.info.clone();
+                Ok(info.into())
+            }
+            _ => {
+                anyhow::bail!("didn't find the dataset with {:?}", (url_datarepo, id))
+            }
+        }
     }
 
-    async fn list_files(&self, url_datarepo: &str, id: &str) -> anyhow::Result<Vec<FileEntry>> {
-        todo!()
+    fn list_files(
+        &self,
+        url_datarepo: &str,
+        id: &str,
+    ) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
+        match self
+            .datasets
+            .get(&(url_datarepo.to_string(), id.to_string()))
+        {
+            Some(dataset) => {
+                let files = dataset
+                    .files
+                    .iter()
+                    .map(|f| f.clone().into())
+                    .collect::<Vec<grpc::FileEntry>>();
+                let stream = Box::pin(stream! {
+                    for file in files {
+                        yield file;
+                    }
+                });
+                Ok(stream)
+            }
+            _ => {
+                anyhow::bail!("didn't find the dataset with {:?}", (url_datarepo, id))
+            }
+        }
     }
 }
 
@@ -132,6 +169,163 @@ impl DispatcherClient for MockDispatcherClient {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct DatasetInfo {
+    url: String,
+    id: String,
+    description: String,
+    total_files: Option<u64>,
+    total_size_bytes: Option<u64>,
+    create_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    tags: HashMap<String, String>,
+}
+
+impl From<DatasetInfo> for grpc::DatasetInfo {
+    fn from(d: DatasetInfo) -> Self {
+        let created_at = Timestamp {
+            seconds: d.create_at.timestamp(),
+            nanos: 0,
+        };
+        let updated_at = Timestamp {
+            seconds: d.updated_at.timestamp(),
+            nanos: 0,
+        };
+        grpc::DatasetInfo {
+            url_datarepo: d.url,
+            id_dataset: d.id,
+            description: d.description,
+            total_files: d.total_files,
+            total_size_bytes: d.total_size_bytes,
+            created_at: Some(created_at),
+            updated_at: Some(updated_at),
+            tags: d.tags,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct FileEntry {
+    path: String,
+    is_dir: bool,
+    size_bytes: u64,
+    mime_type: Option<String>,
+    checksum: Option<String>,
+    modified_at: DateTime<Utc>,
+}
+
+impl From<FileEntry> for grpc::FileEntry {
+    fn from(f: FileEntry) -> Self {
+        let modified_at = Timestamp {
+            seconds: f.modified_at.timestamp(),
+            nanos: 0,
+        };
+        grpc::FileEntry {
+            path: f.path,
+            is_dir: f.is_dir,
+            size_bytes: f.size_bytes,
+            mime_type: f.mime_type,
+            checksum: f.checksum,
+            modified_at: Some(modified_at),
+        }
+    }
+}
+
+fn generate_fake_files(total: u64) -> Vec<FileEntry> {
+    let mut rng = rng();
+    let now = Utc::now();
+
+    let mime_types = [
+        "text/csv",
+        "application/json",
+        "application/parquet",
+        "image/png",
+        "application/octet-stream",
+    ];
+
+    let mut entries = Vec::new();
+
+    // Create some directory structure first
+    let dirs = vec!["raw", "processed", "results", "metadata"];
+
+    for dir in &dirs {
+        entries.push(FileEntry {
+            path: dir.to_string(),
+            is_dir: true,
+            size_bytes: 0,
+            mime_type: None,
+            checksum: None,
+            modified_at: now - Duration::days(rng.random_range(1..30)),
+        });
+    }
+
+    // Generate files inside directories
+    for i in 0..total {
+        let parent = dirs.choose(&mut rng).unwrap();
+
+        let size = rng.random_range(10_000..10_000_000);
+        let modified = now - Duration::days(rng.random_range(0..30));
+
+        let mime = mime_types.choose(&mut rng).unwrap();
+
+        entries.push(FileEntry {
+            path: format!("{parent}/file_{i}.dat"),
+            is_dir: false,
+            size_bytes: size,
+            mime_type: Some(mime.to_string()),
+            checksum: Some(Uuid::new_v4().to_string()),
+            modified_at: modified,
+        });
+    }
+
+    entries
+}
+
+fn generate_datasets() -> Vec<Dataset> {
+    let mut rng = rng();
+
+    let mut datasets = Vec::new();
+
+    let sample_tags = [
+        ("domain", "physics"),
+        ("type", "simulation"),
+        ("format", "csv"),
+        ("owner", "research-team"),
+        ("status", "validated"),
+    ];
+
+    for i in 0..5 {
+        let now = Utc::now();
+        let created = now - Duration::days(rng.random_range(10..100));
+        let updated = created + Duration::days(rng.random_range(1..10));
+
+        let total_files = rng.random_range(5..50);
+        let total_size_bytes = rng.random_range(10_000_000..500_000_000);
+
+        let mut tags = HashMap::new();
+        for (k, v) in sample_tags.sample(&mut rng, 3) {
+            tags.insert(k.to_string(), v.to_string());
+        }
+
+        let info = DatasetInfo {
+            url: format!("https://example.com/datasets/{i}"),
+            id: Uuid::new_v4().to_string(),
+            description: format!("Mock dataset number {i}"),
+            total_files: Some(total_files),
+            total_size_bytes: Some(total_size_bytes),
+            create_at: created,
+            updated_at: updated,
+            tags,
+        };
+
+        let files = generate_fake_files(total_files);
+
+        datasets.push(Dataset { info, files });
+    }
+
+    datasets
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
@@ -140,7 +334,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (however there is not too much query needed, just index visiting).
     // con: the packager need to be initialized, how freq it happens to take latest list?
     //
-    let filemetrix = Arc::new(MockFilemetrixClient::new(vec![]));
+    let datasets = generate_datasets();
+    let filemetrix = Arc::new(MockFilemetrixClient::new(datasets));
     let relayer = DataRepoRelayer::new(filemetrix);
 
     let tool_registry = Arc::new(MockToolRegistryClient::new());

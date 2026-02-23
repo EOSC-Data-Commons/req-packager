@@ -1,7 +1,9 @@
 pub mod grpc {
     tonic::include_proto!("req_packager.v1");
 }
+use futures_util::{StreamExt, TryStreamExt};
 
+use futures_core::stream::BoxStream;
 use grpc::{
     assemble_service_server::AssembleService,
     browse_dataset_response::{BrowsePhase, Event},
@@ -38,8 +40,14 @@ fn current_timestamp() -> Timestamp {
 pub trait FilemetrixClient: Send + Sync + 'static {
     // get dataset information
     async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo>;
-    // list files in the dataset
-    async fn list_files(&self, url_datarepo: &str, id: &str) -> anyhow::Result<Vec<FileEntry>>;
+    /// list files in the dataset
+    /// # Errors
+    /// ???
+    fn list_files(
+        &self,
+        url_datarepo: &str,
+        id: &str,
+    ) -> anyhow::Result<BoxStream<'static, FileEntry>>;
 }
 
 #[derive(Debug)]
@@ -92,6 +100,9 @@ impl DatasetService for DataRepoRelayer {
             let url_datarepo = &req.url_datarepo;
             let id = &req.id_dataset;
 
+            // TODO:
+            // NOTE: datasets are with versions
+            // while files are with modified/updated timestamps.
             let dataset_info = match filemetrix_client.get_dataset_info(url_datarepo, id).await {
                 Ok(info) => info,
                 Err(err) => {
@@ -131,7 +142,7 @@ impl DatasetService for DataRepoRelayer {
             .ok();
 
             // Browsing, keep on sending file info of the dataset asynchronously
-            let files = match filemetrix_client.list_files(url_datarepo, id).await {
+            let files = match filemetrix_client.list_files(url_datarepo, id) {
                 Ok(files) => files,
                 Err(err) => {
                     let err = BrowseError {
@@ -156,55 +167,59 @@ impl DatasetService for DataRepoRelayer {
             // TODO: I may want to have pagination to at most showing 100 entries by default.
             // I need then have sever wait for incomming message to continue, bilateral required
             // and input needs to be a stream.
-            for file in files {
-                let filepath = file.path.clone();
-                let sizebytes = file.size_bytes;
-                if let Err(err) = tx
-                    .send(Ok(BrowseDatasetResponse {
-                        phase: BrowsePhase::PhaseBrowsing as i32,
-                        event: Some(Event::FileEntry(file)),
-                    }))
-                    .await
-                {
-                    // Err
-                    let err = BrowseError {
-                        code: ErrorCode::UnavailableFile as i32,
-                        message: format!("unable to send file: {url_datarepo} - id: {id} - file: {filepath} to client, because of: {err}"),
-                        path: None,
-                        fatal: true,
-                    };
-                    tx.send(Ok(BrowseDatasetResponse {
-                        phase: BrowsePhase::PhaseInit as i32,
-                        event: Some(Event::Error(err)),
-                    }))
-                    .await
-                    .ok();
-                } else {
-                    // Ok
-                    files_count += 1;
-                    bytes_count += sizebytes;
-                    tx.send(Ok(BrowseDatasetResponse {
-                        phase: BrowsePhase::PhaseBrowsing as i32,
-                        event: Some(Event::Progress(BrowseProgress {
-                            files_scanned: files_count,
-                            bytes_scanned: bytes_count,
-                            #[allow(clippy::cast_possible_truncation)]
-                            percent: (files_count / dataset_info.total_files() * 100) as u32,
+            files.for_each_concurrent(10, |file| {
+                let tx = tx.clone();
+                let dataset_info = dataset_info.clone();
+                async move {
+                    let filepath = file.path.clone();
+                    let sizebytes = file.size_bytes;
+                    if let Err(err) = tx
+                        .send(Ok(BrowseDatasetResponse {
+                            phase: BrowsePhase::PhaseBrowsing as i32,
+                            event: Some(Event::FileEntry(file)),
+                        }))
+                        .await
+                    {
+                        // Err
+                        let err = BrowseError {
+                            code: ErrorCode::UnavailableFile as i32,
+                            message: format!("unable to send file: {url_datarepo} - id: {id} - file: {filepath} to client, because of: {err}"),
                             path: None,
-                        })),
-                    }))
-                    .await
-                    .ok();
-                };
+                            fatal: true,
+                        };
+                        tx.send(Ok(BrowseDatasetResponse {
+                            phase: BrowsePhase::PhaseInit as i32,
+                            event: Some(Event::Error(err)),
+                        }))
+                        .await
+                        .ok();
+                    } else {
+                        // Ok
+                        files_count += 1;
+                        bytes_count += sizebytes;
+                        tx.send(Ok(BrowseDatasetResponse {
+                            phase: BrowsePhase::PhaseBrowsing as i32,
+                            event: Some(Event::Progress(BrowseProgress {
+                                files_scanned: files_count,
+                                bytes_scanned: bytes_count,
+                                #[allow(clippy::cast_possible_truncation)]
+                                percent: (files_count / dataset_info.total_files() * 100) as u32,
+                                path: None,
+                            })),
+                        }))
+                        .await
+                        .ok();
+                    };
 
-                // TODO: further operations include:
-                // 1. file download, provide here? yes and calling scanning for mime-type and
-                //    checksum automatically if the file is small (this rely on the file size must
-                //    know beforehead).
-                // 3. mime type deduct?? should this purely be the responsibility of filemetrix??
-                //    (yes here)
-                // 2. relay file to the VREs? in a separated step? (in the seprated step)
-            }
+                    // TODO: further operations include:
+                    // 1. file download, provide here? yes and calling scanning for mime-type and
+                    //    checksum automatically if the file is small (this rely on the file size must
+                    //    know beforehead).
+                    // 3. mime type deduct?? should this purely be the responsibility of filemetrix??
+                    //    (yes here)
+                    // 2. relay file to the VREs? in a separated step? (in the seprated step)
+                }
+            }).await;
 
             let success = files_count == dataset_info.total_files()
                 && bytes_count == dataset_info.total_size_bytes();
