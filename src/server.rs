@@ -21,7 +21,7 @@ use url::Url;
 
 use req_packager::VirtualResearchEnv;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Dataset {
     // XXX: I don't want to couple the grpc logic with business logic, so I need real type for both
     // datasetinfo and fileentry.
@@ -56,6 +56,7 @@ impl FilemetrixClient for MockFilemetrixClient {
         url_datarepo: &str,
         id: &str,
     ) -> anyhow::Result<grpc::DatasetInfo> {
+        // XXX: very fragile to use url+id, should be a PID or other primary key in DB.
         match self
             .datasets
             .get(&(url_datarepo.to_string(), id.to_string()))
@@ -169,7 +170,7 @@ impl DispatcherClient for MockDispatcherClient {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct DatasetInfo {
     url: String,
     id: String,
@@ -204,7 +205,7 @@ impl From<DatasetInfo> for grpc::DatasetInfo {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct FileEntry {
     path: String,
     is_dir: bool,
@@ -308,8 +309,8 @@ fn generate_datasets() -> Vec<Dataset> {
         }
 
         let info = DatasetInfo {
-            url: format!("https://example.com/datasets/{i}"),
-            id: Uuid::new_v4().to_string(),
+            url: "https://example.com/datasets".to_string(),
+            id: format!("{i}"),
             description: format!("Mock dataset number {i}"),
             total_files: Some(total_files),
             total_size_bytes: Some(total_size_bytes),

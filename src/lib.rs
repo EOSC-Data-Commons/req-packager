@@ -58,6 +58,8 @@ struct Dataset {
     files: Vec<FileEntry>,
 }
 
+// TODO: rename to DataRepositoryProxy??
+// This play the role to relay the API calls to source data repository through filemetrix service.
 pub struct DataRepoRelayer {
     // TODO: source of tool-registry, mocked by a JSON, in production can be just tool-registry
     // API call address.
