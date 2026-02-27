@@ -5,14 +5,11 @@ use futures_util::{StreamExt, TryStreamExt};
 
 use futures_core::stream::BoxStream;
 use grpc::{
-    assemble_service_server::AssembleService,
     browse_dataset_response::{BrowsePhase, Event},
     browse_error::ErrorCode,
     dataset_service_server::DatasetService,
-    vre_entry::EntryPoint,
     BrowseComplete, BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, BrowseProgress,
-    DatasetInfo, FileEntry, PackageAssembleRequest, PackageAssembleResponse, VreEntry,
-    VreEoscInline, VreHosted,
+    DatasetInfo, FileEntry,
 };
 
 use prost_types::Timestamp;
@@ -271,7 +268,7 @@ pub trait DispatcherClient: Send + Sync + 'static {
     async fn launch(&self, p: LaunchRequset) -> anyhow::Result<Url>;
 }
 
-pub struct ReqPackAssembler {
+pub struct RequestPackager {
     pub tool_registry: Arc<dyn ToolRegistryClient>,
     pub dispacher: Arc<dyn DispatcherClient>,
 }
@@ -286,7 +283,7 @@ pub struct ReqPackAssembler {
 // For vres that need to be launched through dispatcher, the request is blocking until the vre is
 // ready. We use grpc so other rpc calls are not blocked.
 #[tonic::async_trait]
-impl AssembleService for ReqPackAssembler {
+impl AssembleService for RequestPackager {
     // XXX: this rpc call may need to be separated into two calls, one use streams to get all
     // information needed include resources whose necessity depends on the type of tools.
     // Then send a whole pack and return resp after launch the vre.
