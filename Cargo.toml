@@ -3,13 +3,13 @@ name = "req_packager"
 version = "0.1.0"
 edition = "2021"
 
-# [[bin]]
-# name = "rp_server"
-# path = "src/server.rs"
-#
-# [[bin]]
-# name = "rp_client"
-# path = "src/client.rs"
+[[bin]]
+name = "rp_server"
+path = "src/server.rs"
+
+[[bin]]
+name = "rp_client"
+path = "src/client.rs"
 
 [[bin]]
 name = "ui-demo"

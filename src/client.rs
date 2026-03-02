@@ -1,9 +1,9 @@
 use req_packager::grpc::{
-    assemble_service_client::AssembleServiceClient,
-    dataplayer_service_client::DataplayerServiceClient,
+    browse_dataset_response, dataplayer_service_client::DataplayerServiceClient,
     dataset_service_client::DatasetServiceClient, get_artifact_response::EntryPoint,
     tool_service_client::ToolServiceClient, tool_service_server::ToolService, BrowseDatasetRequest,
-    BrowseDatasetResponse, EoscInlineTool, GetArtifactRequest, HostedTool, PackageAssembleRequest,
+    BrowseDatasetResponse, BrowseError, EoscInlineTool, FindToolsRequest, GetArtifactRequest,
+    HostedTool, LaunchRequest,
 };
 
 #[tokio::main]
@@ -28,8 +28,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let mut stream = client.browse_dataset(request).await?.into_inner();
+
+    // XXX: how can I here do lazy file loading and selection and trigger tool selection without
+    // loading all files? now in poc, I simply pass all files from browse database to be select in
+    // one go.
+    let mut files = Vec::new();
     while let Some(resp) = stream.message().await? {
         println!("resp: {:?}", resp);
+        let evt = resp.event.unwrap();
+        match evt {
+            browse_dataset_response::Event::FileEntry(entry) => {
+                // dbg!(&entry);
+                files.push(entry);
+            }
+            browse_dataset_response::Event::DatasetInfo(info) => {
+                dbg!(info);
+            }
+            browse_dataset_response::Event::Progress(p) => {
+                dbg!(p);
+            }
+            browse_dataset_response::Event::Complete(signal) => {
+                dbg!(signal);
+            }
+            browse_dataset_response::Event::Error(err) => {
+                eprintln!("{:?}", err);
+            }
+        }
     }
 
     // assemble the package from 1. selected files, 2. the selected vre. 3. misc config if there
@@ -42,19 +66,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // formalize the message instead of using ro-crate which is not so easy to work with.
 
     let mut client = ToolServiceClient::connect("http://[::1]:50051").await?;
-    // TODO: request to find tools from selected files
+    let request = tonic::Request::new(FindToolsRequest {
+        files: files.clone(),
+    });
     let resp = client.find_tools(request).await?.into_inner();
+    // XXX: mocked based on number of files, > n use VRE_n, mock 5 vres and 10 dataset with
+    // different number of files in the dataset randomly have number of files 1-10.
+    // The more realistic mock is use the supported mime-type declared by the vres.
     let tools = resp.tools;
+    dbg!(&tools);
 
     let mut client = DataplayerServiceClient::connect("http://[::1]:50051").await?;
-    let tool = tools[1];
+    // XXX: assume that first tool is selected
+    let tool = tools[1].clone();
+    // XXX: files here is the files drag-drop (automatically assigned to, or guess what slots need what??) into the VRE input slots.
+    // TODO: request to launch the vre
+    let request = tonic::Request::new(LaunchRequest {
+        tool: Some(tool),
+        files: files.clone(),
+    });
     let resp = client.launch(request).await?.into_inner();
+
+    // after launch, the communication is all through the handler returned
     let tool_handler = resp.handler;
     if let Some(handler) = tool_handler {
         let id = handler.id;
-        let req = GetArtifactRequest {
-            handler_id: todo!(),
-        };
+        let req = GetArtifactRequest { handler_id: id };
         let artifact = client.get_artifact(req).await?.into_inner();
         let ep = artifact.entry_point.unwrap();
         let callback_url = match ep {

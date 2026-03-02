@@ -3,12 +3,9 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    grpc::{
-        self, assemble_service_server::AssembleServiceServer,
-        dataset_service_server::DatasetServiceServer,
-    },
-    DataRepoRelayer, DispatcherClient, FilemetrixClient, InfoRequest, LaunchRequset,
-    ReqPackAssembler, ToolRegistryClient,
+    DataRelayer, DataSource, DispatcherClient, InfoRequest, LaunchRequset, ToolDatabase, ToolRegistryClient, ToolSource, grpc::{
+        self, ToolMeta, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}
+    }
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -29,13 +26,13 @@ struct Dataset {
     files: Vec<FileEntry>,
 }
 
-struct MockFilemetrixClient {
+struct MockDataSource {
     // the key is a tuple, where 1st element is for datarepo url and the second is the id of the
     // dataset in the datarepo.
     datasets: HashMap<(String, String), Dataset>,
 }
 
-impl MockFilemetrixClient {
+impl MockDataSource {
     fn new(datasets: Vec<Dataset>) -> Self {
         let datasets: HashMap<(String, String), Dataset> = datasets
             .into_iter()
@@ -45,12 +42,12 @@ impl MockFilemetrixClient {
                 ((url, id_ds), ds)
             })
             .collect();
-        MockFilemetrixClient { datasets }
+        MockDataSource { datasets }
     }
 }
 
 #[async_trait::async_trait]
-impl FilemetrixClient for MockFilemetrixClient {
+impl DataSource for MockDataSource {
     async fn get_dataset_info(
         &self,
         url_datarepo: &str,
@@ -100,36 +97,35 @@ impl FilemetrixClient for MockFilemetrixClient {
     }
 }
 
-struct MockToolRegistryClient {}
+struct MockToolSrc {
+    tools: Vec<ToolMeta>,
+}
 
-impl MockToolRegistryClient {
-    fn new() -> Self {
-        MockToolRegistryClient {}
+impl MockToolSrc {
+    fn new(tools: Vec<ToolMeta>) -> Self {
+        MockToolSrc { tools }
     }
 }
 
 #[async_trait::async_trait]
-impl ToolRegistryClient for MockToolRegistryClient {
-    async fn get_tool(&self, id: &str) -> anyhow::Result<VirtualResearchEnv> {
-        todo!()
-    }
-    async fn list_tools(&self) -> anyhow::Result<Vec<VirtualResearchEnv>> {
-        todo!()
+impl ToolSource for MockToolSrc {
+    async fn find_tools(&self, files: &[grpc::FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+        // XXX: very dummy to guess tool by number of files, it needs to be the file mime-type,
+        // even in PoC. smart a bit on n % 10.
+        let tools = match files.len() {
+            1 => self.tools[0..1].to_vec(),
+            2 => self.tools[0..2].to_vec(),
+            3 => self.tools[0..3].to_vec(),
+            _ => self.tools[0..4].to_vec(),
+        };
+        Ok(tools)
     }
 }
 
 struct MockDispatcherClient {
     // I assume dispatcher knows and communicate with tool registry as well
     // It can be generic out to the `ToolRegistryClient` trait
-    tool_registry: MockToolRegistryClient,
-}
-
-impl MockDispatcherClient {
-    fn new() -> Self {
-        MockDispatcherClient {
-            tool_registry: MockToolRegistryClient::new(),
-        }
-    }
+    tool_: MockToolSrc,
 }
 
 #[async_trait::async_trait]
@@ -301,6 +297,7 @@ fn generate_datasets() -> Vec<Dataset> {
         let updated = created + Duration::days(rng.random_range(1..10));
 
         let total_files = rng.random_range(5..50);
+        dbg!(total_files);
         let total_size_bytes = rng.random_range(10_000_000..500_000_000);
 
         let mut tags = HashMap::new();
@@ -327,6 +324,15 @@ fn generate_datasets() -> Vec<Dataset> {
     datasets
 }
 
+fn generate_tools() -> Vec<ToolMeta> {
+    (0..4)
+        .map(|i| ToolMeta {
+            id: format!("{i}"),
+            version: "0.1.0alpha".to_string(),
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
@@ -336,19 +342,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // con: the packager need to be initialized, how freq it happens to take latest list?
     //
     let datasets = generate_datasets();
-    let filemetrix = Arc::new(MockFilemetrixClient::new(datasets));
-    let relayer = DataRepoRelayer::new(filemetrix);
+    let data_src = Arc::new(MockDataSource::new(datasets));
+    let data_relayer = DataRelayer::new(data_src);
 
-    let tool_registry = Arc::new(MockToolRegistryClient::new());
-    let dispacher = Arc::new(MockDispatcherClient::new());
-    let assembler = ReqPackAssembler {
-        tool_registry,
-        dispacher,
-    };
+    let tools = generate_tools();
+    let tool_src = Arc::new(MockToolSrc::new(tools));
+    let tool_srv = ToolDatabase::new(tool_src);
+
+    let dispacher = Arc::new(MockDispatcher::new());
+    let data_player = Dataplayer::new(dispatcher);
 
     Server::builder()
-        .add_service(DatasetServiceServer::new(relayer))
-        .add_service(AssembleServiceServer::new(assembler))
+        .add_service(DatasetServiceServer::new(data_relayer))
+        .add_service(ToolServiceServer::new(tool_srv))
+        .add_service(DataplayerServiceServer::new(data_player))
         .serve(addr)
         .await?;
     Ok(())

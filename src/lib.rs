@@ -15,13 +15,21 @@ use grpc::{
 use prost_types::Timestamp;
 use std::{
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use url::Url;
+
+use crate::grpc::{
+    tool_service_server::ToolService, BrowseToolsRequest, BrowseToolsResponse, FindToolsRequest,
+    FindToolsResponse, GetToolRequest, ToolMeta, ToolResponse,
+};
 
 fn current_timestamp() -> Timestamp {
     let now = SystemTime::now()
@@ -34,7 +42,7 @@ fn current_timestamp() -> Timestamp {
 }
 
 #[async_trait::async_trait]
-pub trait FilemetrixClient: Send + Sync + 'static {
+pub trait DataSource: Send + Sync + 'static {
     // get dataset information
     async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo>;
     /// list files in the dataset
@@ -57,7 +65,7 @@ struct Dataset {
 
 // TODO: rename to DataRepositoryProxy??
 // This play the role to relay the API calls to source data repository through filemetrix service.
-pub struct DataRepoRelayer {
+pub struct DataRelayer {
     // TODO: source of tool-registry, mocked by a JSON, in production can be just tool-registry
     // API call address.
     // TODO: source of type-registry, mocked by a JSON
@@ -65,12 +73,12 @@ pub struct DataRepoRelayer {
     // all behind the filemetrix? Or get from filemetrix (seems better because I don't want RP
     // tangled directly with DB, it is good to have operations behind filemetrix and this is one of
     // the roles filemetrix need to play) the basic info and query from DB after?
-    filemetrix: Arc<dyn FilemetrixClient>,
+    data_source: Arc<dyn DataSource>,
 }
 
-impl DataRepoRelayer {
-    pub fn new(filemetrix: Arc<dyn FilemetrixClient>) -> Self {
-        Self { filemetrix }
+impl DataRelayer {
+    pub fn new(src: Arc<dyn DataSource>) -> Self {
+        Self { data_source: src }
     }
 }
 
@@ -78,7 +86,7 @@ impl DataRepoRelayer {
 // logic, then I can do the same no matter for filemetrix, or self directy service, or mocked test.
 #[allow(clippy::too_many_lines)]
 #[tonic::async_trait]
-impl DatasetService for DataRepoRelayer {
+impl DatasetService for DataRelayer {
     type BrowseDatasetStream = ReceiverStream<Result<BrowseDatasetResponse, Status>>;
 
     /// browse dataset through filemetrix API calls.
@@ -89,9 +97,10 @@ impl DatasetService for DataRepoRelayer {
         &self,
         request: Request<BrowseDatasetRequest>,
     ) -> Result<Response<Self::BrowseDatasetStream>, Status> {
+        // TODO: tracing
         println!("Got a request: {request:?}");
         let (tx, rx) = mpsc::channel(16);
-        let filemetrix_client = Arc::clone(&self.filemetrix);
+        let data_source = Arc::clone(&self.data_source);
 
         tokio::spawn(async move {
             // INIT Phase
@@ -102,7 +111,7 @@ impl DatasetService for DataRepoRelayer {
             // TODO:
             // NOTE: datasets are with versions
             // while files are with modified/updated timestamps.
-            let dataset_info = match filemetrix_client.get_dataset_info(url_datarepo, id).await {
+            let dataset_info = match data_source.get_dataset_info(url_datarepo, id).await {
                 Ok(info) => info,
                 Err(err) => {
                     let err = BrowseError {
@@ -141,7 +150,7 @@ impl DatasetService for DataRepoRelayer {
             .ok();
 
             // Browsing, keep on sending file info of the dataset asynchronously
-            let files = match filemetrix_client.list_files(url_datarepo, id) {
+            let files = match data_source.list_files(url_datarepo, id) {
                 Ok(files) => files,
                 Err(err) => {
                     let err = BrowseError {
@@ -161,21 +170,24 @@ impl DatasetService for DataRepoRelayer {
                 }
             };
 
-            let mut files_count = 0;
-            let mut bytes_count = 0;
+            let files_count = Arc::new(AtomicU64::new(0));
+            let bytes_count = Arc::new(AtomicU64::new(0));
             // TODO: I may want to have pagination to at most showing 100 entries by default.
             // I need then have sever wait for incomming message to continue, bilateral required
             // and input needs to be a stream.
             files.for_each_concurrent(10, |file| {
+                // dbg!(files_count);
                 let tx = tx.clone();
                 let dataset_info = dataset_info.clone();
+                let files_count = files_count.clone();
+                let bytes_count = bytes_count.clone();
                 async move {
                     let filepath = file.path.clone();
                     let sizebytes = file.size_bytes;
                     if let Err(err) = tx
                         .send(Ok(BrowseDatasetResponse {
                             phase: BrowsePhase::PhaseBrowsing as i32,
-                            event: Some(Event::FileEntry(file)),
+                            event: Some(Event::FileEntry(file.clone())),
                         }))
                         .await
                     {
@@ -194,17 +206,28 @@ impl DatasetService for DataRepoRelayer {
                         .ok();
                     } else {
                         // Ok
-                        files_count += 1;
-                        bytes_count += sizebytes;
+                        let (new_files, new_bytes) = if !file.is_dir {
+                            let new_files = files_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+                            let new_bytes =
+                                bytes_count.fetch_add(sizebytes, Ordering::Relaxed)
+                                + sizebytes;
+                            (new_files, new_bytes)
+                        } else {
+                            (0,0)
+                        };
                         tx.send(Ok(BrowseDatasetResponse {
                             phase: BrowsePhase::PhaseBrowsing as i32,
                             event: Some(Event::Progress(BrowseProgress {
-                                files_scanned: files_count,
-                                bytes_scanned: bytes_count,
+                                files_scanned: new_files,
+                                bytes_scanned: new_bytes,
+                                // FIXME: don't calculate percent in server side, because the
+                                // respond arrive in client side without orders.
                                 #[allow(clippy::cast_possible_truncation)]
-                                percent: (files_count / dataset_info.total_files() * 100) as u32,
+                                percent: ((new_files as f64
+                                    / dataset_info.total_files() as f64) * 100.0) as u32,
                                 path: None,
-                            })),
+                        })),
                         }))
                         .await
                         .ok();
@@ -220,6 +243,8 @@ impl DatasetService for DataRepoRelayer {
                 }
             }).await;
 
+            let files_count = files_count.load(Ordering::Relaxed);
+            let bytes_count = bytes_count.load(Ordering::Relaxed);
             let success = files_count == dataset_info.total_files()
                 && bytes_count == dataset_info.total_size_bytes();
 
@@ -282,122 +307,184 @@ pub struct RequestPackager {
 //
 // For vres that need to be launched through dispatcher, the request is blocking until the vre is
 // ready. We use grpc so other rpc calls are not blocked.
+// #[tonic::async_trait]
+// impl AssembleService for RequestPackager {
+//     // XXX: this rpc call may need to be separated into two calls, one use streams to get all
+//     // information needed include resources whose necessity depends on the type of tools.
+//     // Then send a whole pack and return resp after launch the vre.
+//     async fn package_assemble(
+//         &self,
+//         mut request: Request<PackageAssembleRequest>,
+//     ) -> Result<Response<PackageAssembleResponse>, Status> {
+//         println!("Got a request: {request:?}");
+//         let tool_registry = Arc::clone(&self.tool_registry);
+//         let dispacher = Arc::clone(&self.dispacher);
+//
+//         // client (by user) says which tool to use and which files are selected to launch with vre
+//         let req = request.get_mut();
+//         let id_vre = &req.id_vre;
+//         let files = &mut req.file_entries;
+//
+//         let tool = tool_registry.get_tool(id_vre).await.map_err(|e| {
+//             // convert anyhow error to tonic status
+//             println!("Failed to get tool from registry: {e:?}");
+//             Status::internal(format!("Failed to get tool from registry: {e}"))
+//         })?;
+//
+//         // TODO: assemble an ro-crate and send to dispatcher and get back the required vre callback
+//         match tool {
+//             VirtualResearchEnv::EoscInline { id, version } => {
+//                 // check file number and simply relay (because I use same data structure for the
+//                 // tool registry api call) the entry to the client
+//
+//                 // Inline tool only support passing one file, there might be use cases the tool
+//                 // processes multiple files, but impl that when the case comes.
+//                 if files.len() != 1 {
+//                     let err_msg = format!(
+//                         "inline tool only processes on one file, get: {}",
+//                         files.len()
+//                     );
+//                     // TODO: proper tracing log
+//                     println!("{err_msg}");
+//                     return Err(Status::internal(err_msg));
+//                 }
+//
+//                 // TODO: impl From trait to do the conversion
+//                 // XXX: how inline tool get the file entry information? through payload? through
+//                 // url query? or other machenism??
+//                 let file = files.remove(0); // pop the file entry since I don't need it anymore
+//
+//                 // attach the file entry info and send back to client
+//                 let vre = EntryPoint::EoscInline(VreEoscInline {
+//                     url_callback: "https://example.com".to_string(),
+//                     file_entry: Some(file),
+//                 });
+//                 let vre_entry = VreEntry {
+//                     id_vre: id,
+//                     version,
+//                     entry_point: Some(vre),
+//                 };
+//
+//                 // vre that not through dispatcher.
+//                 let resp = PackageAssembleResponse {
+//                     vre_entry: Some(vre_entry),
+//                 };
+//                 Ok(Response::new(resp))
+//             }
+//             VirtualResearchEnv::Hosted {
+//                 id,
+//                 version,
+//                 requirements,
+//             } => {
+//                 // assamble a package and send to dispatcher that return a callback url
+//                 // TODO: can check if the quota reached, users should not allowed to launch
+//                 // infinit amount of vres (avoiding ddos).
+//
+//                 let filenames = files
+//                     .iter()
+//                     .map(|f| {
+//                         let p = PathBuf::from(f.path.clone());
+//                         // FIXME: dontpanic
+//                         let p = p.file_name().and_then(|n| n.to_str()).unwrap().to_string();
+//                         p
+//                     })
+//                     .collect::<Vec<String>>();
+//
+//                 if !requirements.iter().any(|r| filenames.contains(r)) {
+//                     let err_msg = format!("{requirements:?} not fullfilled",);
+//                     // TODO: proper tracing log
+//                     println!("{err_msg}");
+//                     return Err(Status::internal(err_msg));
+//                 }
+//
+//                 // talk to dispatcher to launch a vre
+//                 let launch_req = LaunchRequset {
+//                     id_vre: id.clone(),
+//                     files: files.clone(),
+//                 };
+//                 let url_callback = dispacher.launch(launch_req).await.map_err(|e| {
+//                     // convert anyhow error to tonic status
+//                     Status::internal(format!("dispacher launch failed because of {e}"))
+//                 })?;
+//                 let url_callback = url_callback.to_string();
+//
+//                 let vre = EntryPoint::Hosted(VreHosted { url_callback });
+//                 let vre_entry = VreEntry {
+//                     id_vre: id.clone(),
+//                     version,
+//                     entry_point: Some(vre),
+//                 };
+//
+//                 // vre that not through dispatcher.
+//                 let resp = PackageAssembleResponse {
+//                     vre_entry: Some(vre_entry),
+//                 };
+//                 Ok(Response::new(resp))
+//             }
+//             _ => unimplemented!(),
+//         }
+//     }
+// }
+//
+#[async_trait::async_trait]
+pub trait ToolSource: Send + Sync + 'static {
+    // // get dataset information
+    // async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo>;
+    //
+    // /// list files in the dataset
+    // /// # Errors
+    // /// ???
+    // fn list_files(
+    //     &self,
+    //     url_datarepo: &str,
+    //     id: &str,
+    // ) -> anyhow::Result<BoxStream<'static, FileEntry>>;
+    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
+}
+
+pub struct ToolDatabase {
+    tool_source: Arc<dyn ToolSource>,
+}
+
+impl ToolDatabase {
+    pub fn new(src: Arc<dyn ToolSource>) -> Self {
+        Self { tool_source: src }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 #[tonic::async_trait]
-impl AssembleService for RequestPackager {
-    // XXX: this rpc call may need to be separated into two calls, one use streams to get all
-    // information needed include resources whose necessity depends on the type of tools.
-    // Then send a whole pack and return resp after launch the vre.
-    async fn package_assemble(
+impl ToolService for ToolDatabase {
+    type BrowseToolsStream = ReceiverStream<Result<BrowseToolsResponse, Status>>;
+
+    async fn get_tool(
         &self,
-        mut request: Request<PackageAssembleRequest>,
-    ) -> Result<Response<PackageAssembleResponse>, Status> {
-        println!("Got a request: {request:?}");
-        let tool_registry = Arc::clone(&self.tool_registry);
-        let dispacher = Arc::clone(&self.dispacher);
+        request: Request<GetToolRequest>,
+    ) -> Result<Response<ToolResponse>, Status> {
+        todo!()
+    }
 
-        // client (by user) says which tool to use and which files are selected to launch with vre
-        let req = request.get_mut();
-        let id_vre = &req.id_vre;
-        let files = &mut req.file_entries;
+    async fn find_tools(
+        &self,
+        req: Request<FindToolsRequest>,
+    ) -> Result<Response<FindToolsResponse>, Status> {
+        let req = req.get_ref();
 
-        let tool = tool_registry.get_tool(id_vre).await.map_err(|e| {
-            // convert anyhow error to tonic status
-            println!("Failed to get tool from registry: {e:?}");
-            Status::internal(format!("Failed to get tool from registry: {e}"))
-        })?;
+        let tools = self
+            .tool_source
+            .find_tools(&req.files)
+            .await
+            // FIXME: internal is too alart, status code deduct from API call errors, and setting
+            // retry or report mechenism.
+            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+        Ok(Response::new(FindToolsResponse { tools }))
+    }
 
-        // TODO: assemble an ro-crate and send to dispatcher and get back the required vre callback
-        match tool {
-            VirtualResearchEnv::EoscInline { id, version } => {
-                // check file number and simply relay (because I use same data structure for the
-                // tool registry api call) the entry to the client
-
-                // Inline tool only support passing one file, there might be use cases the tool
-                // processes multiple files, but impl that when the case comes.
-                if files.len() != 1 {
-                    let err_msg = format!(
-                        "inline tool only processes on one file, get: {}",
-                        files.len()
-                    );
-                    // TODO: proper tracing log
-                    println!("{err_msg}");
-                    return Err(Status::internal(err_msg));
-                }
-
-                // TODO: impl From trait to do the conversion
-                // XXX: how inline tool get the file entry information? through payload? through
-                // url query? or other machenism??
-                let file = files.remove(0); // pop the file entry since I don't need it anymore
-
-                // attach the file entry info and send back to client
-                let vre = EntryPoint::EoscInline(VreEoscInline {
-                    url_callback: "https://example.com".to_string(),
-                    file_entry: Some(file),
-                });
-                let vre_entry = VreEntry {
-                    id_vre: id,
-                    version,
-                    entry_point: Some(vre),
-                };
-
-                // vre that not through dispatcher.
-                let resp = PackageAssembleResponse {
-                    vre_entry: Some(vre_entry),
-                };
-                Ok(Response::new(resp))
-            }
-            VirtualResearchEnv::Hosted {
-                id,
-                version,
-                requirements,
-            } => {
-                // assamble a package and send to dispatcher that return a callback url
-                // TODO: can check if the quota reached, users should not allowed to launch
-                // infinit amount of vres (avoiding ddos).
-
-                let filenames = files
-                    .iter()
-                    .map(|f| {
-                        let p = PathBuf::from(f.path.clone());
-                        // FIXME: dontpanic
-                        let p = p.file_name().and_then(|n| n.to_str()).unwrap().to_string();
-                        p
-                    })
-                    .collect::<Vec<String>>();
-
-                if !requirements.iter().any(|r| filenames.contains(r)) {
-                    let err_msg = format!("{requirements:?} not fullfilled",);
-                    // TODO: proper tracing log
-                    println!("{err_msg}");
-                    return Err(Status::internal(err_msg));
-                }
-
-                // talk to dispatcher to launch a vre
-                let launch_req = LaunchRequset {
-                    id_vre: id.clone(),
-                    files: files.clone(),
-                };
-                let url_callback = dispacher.launch(launch_req).await.map_err(|e| {
-                    // convert anyhow error to tonic status
-                    Status::internal(format!("dispacher launch failed because of {e}"))
-                })?;
-                let url_callback = url_callback.to_string();
-
-                let vre = EntryPoint::Hosted(VreHosted { url_callback });
-                let vre_entry = VreEntry {
-                    id_vre: id.clone(),
-                    version,
-                    entry_point: Some(vre),
-                };
-
-                // vre that not through dispatcher.
-                let resp = PackageAssembleResponse {
-                    vre_entry: Some(vre_entry),
-                };
-                Ok(Response::new(resp))
-            }
-            _ => unimplemented!(),
-        }
+    async fn browse_tools(
+        &self,
+        request: Request<BrowseToolsRequest>,
+    ) -> Result<Response<Self::BrowseToolsStream>, Status> {
+        todo!()
     }
 }
 
