@@ -351,6 +351,7 @@ async fn main() {
     let app = Router::new()
         .nest_service("/assets", ServeDir::new("ui/assets"))
         .route("/search-result", get(search_result))
+        .route("/", get(search_result))
         .route("/datasets/{id}", get(dataset))
         .route("/datasets/{id}/repo", get(inspect_dataset_repo))
         .route("/repo-additional", get(repo_additional))
