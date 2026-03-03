@@ -3,13 +3,20 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    DataRelayer, DataSource, DispatcherClient, InfoRequest, LaunchRequset, ToolDatabase, ToolRegistryClient, ToolSource, grpc::{
-        self, ToolMeta, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}
-    }
+    grpc::{
+        self,
+        dataplayer_service_server::DataplayerServiceServer,
+        dataset_service_server::DatasetServiceServer,
+        tool_service_server::{ToolService, ToolServiceServer},
+        tool_status, ToolHandler, ToolMeta, UserId,
+    },
+    DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, InfoRequest, LaunchRequset,
+    ToolDatabase, ToolRegistryClient, ToolSource,
 };
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use std::{collections::HashMap, sync::Arc};
@@ -122,47 +129,50 @@ impl ToolSource for MockToolSrc {
     }
 }
 
-struct MockDispatcherClient {
-    // I assume dispatcher knows and communicate with tool registry as well
-    // It can be generic out to the `ToolRegistryClient` trait
-    tool_: MockToolSrc,
+struct MockDispatcher {
+    db: Mutex<HashMap<Uuid, ToolHandler>>,
+}
+
+impl MockDispatcher {
+    fn new() -> Self {
+        Self {
+            db: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 #[async_trait::async_trait]
-impl DispatcherClient for MockDispatcherClient {
-    async fn check_user_requests(&self, id_user: String) -> anyhow::Result<Vec<InfoRequest>> {
-        todo!()
-    }
-
-    // launch a vre with the launch request, return the callback url when it is ready
-    async fn launch(&self, p: LaunchRequset) -> anyhow::Result<Url> {
-        // TODO: in the production impl, the launchReq -> ro-crate that carry information to launch
-        // a vre.
-        // It will be things like
-        //
-        // ```rust
-        // struct RoCrate {
-        //
-        // }
-        // let launch_pack: RoCrate = p.into();
-        // let url = self.post(launch_pack).await?;
-        // return url;
-        // ```
-
-        // TODO: dispatcher talk to tool registry to validate the tool request, this comes with the
-        // question, should dispatcher fully trust req-packager that it always give the correct
-        // tool id and type to launch. After all it is dispatcher's side decision whether do the
-        // validation.
-        // XXX: the LaunchRequset should contain the id of tool registry as well because dispatcher
-        // in principle can support dispatch to different tool registry, but now only one is
-        // enough.
-        //
+impl Dispatcher for MockDispatcher {
+    // // launch a vre with the launch request, return the callback url when it is ready
+    async fn launch(
+        &self,
+        tool: &ToolMeta,
+        files: &[grpc::FileEntry],
+    ) -> anyhow::Result<ToolHandler> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
         // mapping for what eosc user can access which vres. Should this all kept in an auth server
         // (assume it will be one), or dispatcher maintain the table and mapping??
+        // thus non-mock one should take care of auth here or somewhere in front
 
-        todo!()
+        // in the mock, this will be just
+        // 1. have a in-memory db (mocked by HashMap) to record user and tools launched
+        // 2. return a dummy url to be printed in the UI frontend.
+
+        let id = uuid::Uuid::new_v4();
+        let th = ToolHandler {
+            state: Some(grpc::ToolStatus {
+                log: "".to_string(),
+                state: tool_status::State::Ready.into(),
+            }),
+            owner: Some(UserId {
+                inner: "user000".to_string(),
+            }),
+            id: id.to_string(),
+        };
+        let mut db = self.db.lock().await;
+        db.entry(id).or_insert(th.clone());
+        Ok(th)
     }
 }
 
@@ -347,10 +357,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tools = generate_tools();
     let tool_src = Arc::new(MockToolSrc::new(tools));
-    let tool_srv = ToolDatabase::new(tool_src);
+    let tool_src_cloned = Arc::clone(&tool_src);
+    let tool_srv = ToolDatabase::new(tool_src_cloned);
 
-    let dispacher = Arc::new(MockDispatcher::new());
-    let data_player = Dataplayer::new(dispatcher);
+    let dispatcher = Arc::new(MockDispatcher::new());
+    let tool_src_cloned = Arc::clone(&tool_src);
+    let data_player = Dataplayer::new(dispatcher, tool_src_cloned);
 
     Server::builder()
         .add_service(DatasetServiceServer::new(data_relayer))

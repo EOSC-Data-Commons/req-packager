@@ -3,7 +3,7 @@ use req_packager::grpc::{
     dataset_service_client::DatasetServiceClient, get_artifact_response::EntryPoint,
     tool_service_client::ToolServiceClient, tool_service_server::ToolService, BrowseDatasetRequest,
     BrowseDatasetResponse, BrowseError, EoscInlineTool, FindToolsRequest, GetArtifactRequest,
-    HostedTool, LaunchRequest,
+    HostedTool, LaunchRequest, QueryUserRequest, UserId,
 };
 
 #[tokio::main]
@@ -92,12 +92,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handler) = tool_handler {
         let id = handler.id;
         let req = GetArtifactRequest { handler_id: id };
-        let artifact = client.get_artifact(req).await?.into_inner();
-        let ep = artifact.entry_point.unwrap();
+        let resp = client.get_artifact(req).await?.into_inner();
+        let ep = resp.entry_point.unwrap();
         let callback_url = match ep {
             EntryPoint::EoscInline(t) => t.callback_url,
             EntryPoint::Hosted(t) => t.callback_url,
         };
+    }
+
+    // a typical case to encorage user to stick with EOSC system is to get the return user a list
+    // of tools status and a dashboard to see what they did, some summary for limit etc.
+    let req = QueryUserRequest {
+        user_id: Some(UserId {
+            inner: "001".to_string(),
+        }),
+    };
+    let result = client.query(req).await?.into_inner();
+    let handlers = result.th;
+    // print all status of these tool handlers
+    for h in handlers {
+        dbg!(h.state);
+        dbg!(h.id);
+        dbg!(h.owner);
     }
 
     Ok(())

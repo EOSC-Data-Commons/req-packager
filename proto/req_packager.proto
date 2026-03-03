@@ -210,12 +210,29 @@ message ToolHandler {
 message LaunchResponse {
   ToolHandler handler = 1;
 }
-message StatusMonitorRequest {
+
+message MonitorStatusRequest {
   string id = 1;
 }
-message StatusMonitorResponse {
+
+message MonitorStatusResponse {
+  // monitoring has two Phases, running and completed
+  enum Phase {
+    RUNNING = 0;
+    COMPLETED = 1;
+  }
+
+  Phase phase = 1;
+  ToolStatus status = 2;
+}
+
+message GetStatusRequest {
+  string id = 1;
+}
+message GetStatusResponse {
   ToolStatus status = 1;
 }
+
 
 message DropRequest {
   string id = 1;
@@ -228,7 +245,7 @@ message QueryUserRequest {
   User_Id user_id = 1;
 }
 message QueryUserResponse {
-  ToolHandler th = 1;
+  repeated ToolHandler th = 1;
 }
 
 message GetArtifactRequest {
@@ -265,8 +282,10 @@ service DataplayerService {
   // Get the artifact from id.
   rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
 
-  // check the status of one running session
-  rpc StatusMonitor(StatusMonitorRequest) returns (StatusMonitorResponse);
+  // monitoring the status of one running session
+  rpc MonitorStatus(MonitorStatusRequest) returns (stream MonitorStatusResponse);
+
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
   // ??? who should drop? vre call drop or from edc system call drop?
   // Is the use case always after the control move to vre, it never goes back to eosc?

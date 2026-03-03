@@ -27,8 +27,12 @@ use tonic::{Request, Response, Status};
 use url::Url;
 
 use crate::grpc::{
-    tool_service_server::ToolService, BrowseToolsRequest, BrowseToolsResponse, FindToolsRequest,
-    FindToolsResponse, GetToolRequest, ToolMeta, ToolResponse,
+    dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
+    tool_service_server::ToolService, BrowseToolsRequest, BrowseToolsResponse, DropRequest,
+    DropResponse, EoscInlineTool, FindToolsRequest, FindToolsResponse, GetArtifactRequest,
+    GetArtifactResponse, GetStatusRequest, GetStatusResponse, GetToolRequest, HostedTool,
+    LaunchRequest, LaunchResponse, MonitorStatusRequest, MonitorStatusResponse, QueryUserRequest,
+    QueryUserResponse, ToolHandler, ToolMeta, ToolResponse,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -452,7 +456,6 @@ impl ToolDatabase {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 #[tonic::async_trait]
 impl ToolService for ToolDatabase {
     type BrowseToolsStream = ReceiverStream<Result<BrowseToolsResponse, Status>>;
@@ -474,7 +477,7 @@ impl ToolService for ToolDatabase {
             .tool_source
             .find_tools(&req.files)
             .await
-            // FIXME: internal is too alart, status code deduct from API call errors, and setting
+            // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
             .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
         Ok(Response::new(FindToolsResponse { tools }))
@@ -484,6 +487,120 @@ impl ToolService for ToolDatabase {
         &self,
         request: Request<BrowseToolsRequest>,
     ) -> Result<Response<Self::BrowseToolsStream>, Status> {
+        todo!()
+    }
+}
+
+pub enum ToolStatus {
+    Ready,
+}
+
+#[async_trait::async_trait]
+pub trait Dispatcher: Send + Sync + 'static {
+    // TODO: for all types involved in the inner traits, should use mirror type of grpc type
+    // because these traits are meant to be impl from lib, not from looking at gencode from
+    // protobuf. Same for ToolService etc.
+    async fn launch(&self, tool: &ToolMeta, files: &[FileEntry]) -> anyhow::Result<ToolHandler>;
+    async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact>;
+    async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus>;
+}
+
+pub struct Dataplayer {
+    dispatcher: Arc<dyn Dispatcher>,
+    tool_source: Arc<dyn ToolSource>,
+}
+
+impl Dataplayer {
+    pub fn new(dp: Arc<dyn Dispatcher>, tool_src: Arc<dyn ToolSource>) -> Self {
+        Self {
+            dispatcher: dp,
+            tool_source: tool_src,
+        }
+    }
+}
+
+enum Artifact {
+    HostedTool,
+    EoscInlineTool,
+}
+
+#[tonic::async_trait]
+impl DataplayerService for Dataplayer {
+    type MonitorStatusStream = ReceiverStream<Result<MonitorStatusResponse, Status>>;
+
+    async fn launch(
+        &self,
+        req: Request<LaunchRequest>,
+    ) -> Result<Response<LaunchResponse>, Status> {
+        let req = req.get_ref();
+        let tool_meta = &req.tool.clone().unwrap(); // FIXME: DONTPANIC
+        let files_meta = &req.files;
+
+        let handler = self.dispatcher.launch(tool_meta, files_meta).await.unwrap();
+
+        Ok(Response::new(LaunchResponse {
+            handler: Some(handler),
+        }))
+    }
+
+    async fn query(
+        &self,
+        req: Request<QueryUserRequest>,
+    ) -> Result<Response<QueryUserResponse>, Status> {
+        todo!()
+    }
+
+    async fn get_artifact(
+        &self,
+        req: Request<GetArtifactRequest>,
+    ) -> Result<Response<GetArtifactResponse>, Status> {
+        let req = req.get_ref();
+        let handler_id = &req.handler_id;
+        // TODO: check the state of the tool is ready.
+        let status = self.dispatcher.get_status(handler_id).await.unwrap();
+        if matches!(status, ToolStatus::Ready) {
+            return Err(Status::internal("tool not ready"));
+        }
+        let artifact = self.dispatcher.get_artifact(handler_id).await.unwrap();
+
+        let ep = match artifact {
+            Artifact::HostedTool => {
+                let hosted_tool = grpc::HostedTool {
+                    callback_url: "https://example.com".to_string(),
+                };
+                EntryPoint::Hosted(hosted_tool)
+            }
+            Artifact::EoscInlineTool => {
+                let hosted_tool = grpc::EoscInlineTool {
+                    callback_url: "https://example.com".to_string(),
+                };
+                EntryPoint::EoscInline(hosted_tool)
+            }
+        };
+
+        Ok(Response::new(GetArtifactResponse {
+            entry_point: Some(ep),
+        }))
+    }
+
+    async fn get_status(
+        &self,
+        req: Request<GetStatusRequest>,
+    ) -> Result<Response<GetStatusResponse>, Status> {
+        let req = req.get_ref();
+        let handler_id = &req.id;
+        let status = self.dispatcher.get_status(handler_id).await.unwrap();
+        todo!()
+    }
+
+    async fn monitor_status(
+        &self,
+        req: Request<MonitorStatusRequest>,
+    ) -> Result<Response<Self::MonitorStatusStream>, Status> {
+        todo!()
+    }
+
+    async fn drop(&self, req: Request<DropRequest>) -> Result<Response<DropResponse>, Status> {
         todo!()
     }
 }
