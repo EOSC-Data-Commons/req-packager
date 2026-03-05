@@ -208,7 +208,7 @@ message ToolHandler {
 }
 
 message LaunchResponse {
-  ToolHandler handler = 1;
+  string handler_id = 1;
 }
 
 message MonitorStatusRequest {

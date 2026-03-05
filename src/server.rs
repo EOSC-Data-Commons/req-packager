@@ -10,16 +10,16 @@ use req_packager::{
         tool_service_server::{ToolService, ToolServiceServer},
         tool_status, ToolHandler, ToolMeta, UserId,
     },
-    DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, InfoRequest, LaunchRequset,
-    ToolDatabase, ToolRegistryClient, ToolSource,
+    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, InfoRequest,
+    LaunchRequset, ToolDatabase, ToolRegistryClient, ToolSource, ToolStatus,
 };
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tonic::transport::Server;
 use url::Url;
 
@@ -130,13 +130,17 @@ impl ToolSource for MockToolSrc {
 }
 
 struct MockDispatcher {
-    db: Mutex<HashMap<Uuid, ToolHandler>>,
+    // to get the handler and light meta data
+    db_1: RwLock<HashMap<Uuid, ToolHandler>>,
+    // to get the heavy Artifact, that is updated once per record
+    db_2: RwLock<HashMap<Uuid, Artifact>>,
 }
 
 impl MockDispatcher {
     fn new() -> Self {
         Self {
-            db: Mutex::new(HashMap::new()),
+            db_1: RwLock::new(HashMap::new()),
+            db_2: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -144,11 +148,7 @@ impl MockDispatcher {
 #[async_trait::async_trait]
 impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
-    async fn launch(
-        &self,
-        tool: &ToolMeta,
-        files: &[grpc::FileEntry],
-    ) -> anyhow::Result<ToolHandler> {
+    async fn launch(&self, tool: &ToolMeta, files: &[grpc::FileEntry]) -> anyhow::Result<String> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
         // mapping for what eosc user can access which vres. Should this all kept in an auth server
@@ -158,6 +158,8 @@ impl Dispatcher for MockDispatcher {
         // in the mock, this will be just
         // 1. have a in-memory db (mocked by HashMap) to record user and tools launched
         // 2. return a dummy url to be printed in the UI frontend.
+
+        // should tool meta contain all info to let dispatcher know "how to launch a tool?"
 
         let id = uuid::Uuid::new_v4();
         let th = ToolHandler {
@@ -170,9 +172,32 @@ impl Dispatcher for MockDispatcher {
             }),
             id: id.to_string(),
         };
-        let mut db = self.db.lock().await;
+
+        let mut db = self.db_1.write().await;
         db.entry(id).or_insert(th.clone());
-        Ok(th)
+        // mock: this example is the lightweight tool that immediately ready, so the artifact is
+        // ready immediately.
+
+        let mut db = self.db_2.write().await;
+        let art = Artifact::EoscInlineTool {
+            callback: Url::from_str("https://example.com/launch").unwrap(),
+        };
+        db.entry(id).or_insert(art.clone());
+
+        Ok(th.id)
+    }
+
+    async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact> {
+        let db = self.db_2.read().await;
+        let hd = db.get(&Uuid::from_str(handler_id).unwrap()).unwrap();
+        Ok(hd.clone())
+    }
+
+    async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus> {
+        let db = self.db_1.read().await;
+        let hd = db.get(&Uuid::from_str(handler_id).unwrap()).unwrap();
+        let status = hd.state.as_ref().unwrap();
+        Ok(status.clone().into())
     }
 }
 

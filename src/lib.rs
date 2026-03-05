@@ -28,11 +28,11 @@ use url::Url;
 
 use crate::grpc::{
     dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
-    tool_service_server::ToolService, BrowseToolsRequest, BrowseToolsResponse, DropRequest,
-    DropResponse, EoscInlineTool, FindToolsRequest, FindToolsResponse, GetArtifactRequest,
-    GetArtifactResponse, GetStatusRequest, GetStatusResponse, GetToolRequest, HostedTool,
-    LaunchRequest, LaunchResponse, MonitorStatusRequest, MonitorStatusResponse, QueryUserRequest,
-    QueryUserResponse, ToolHandler, ToolMeta, ToolResponse,
+    tool_service_server::ToolService, tool_status, BrowseToolsRequest, BrowseToolsResponse,
+    DropRequest, DropResponse, EoscInlineTool, FindToolsRequest, FindToolsResponse,
+    GetArtifactRequest, GetArtifactResponse, GetStatusRequest, GetStatusResponse, GetToolRequest,
+    HostedTool, LaunchRequest, LaunchResponse, MonitorStatusRequest, MonitorStatusResponse,
+    QueryUserRequest, QueryUserResponse, ToolHandler, ToolMeta, ToolResponse,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -492,7 +492,38 @@ impl ToolService for ToolDatabase {
 }
 
 pub enum ToolStatus {
+    Preparing,
     Ready,
+    Dropped,
+}
+
+impl From<ToolStatus> for grpc::ToolStatus {
+    fn from(status: ToolStatus) -> Self {
+        match status {
+            ToolStatus::Ready => grpc::ToolStatus {
+                log: "ready".to_string(),
+                state: tool_status::State::Ready.into(),
+            },
+            ToolStatus::Preparing => grpc::ToolStatus {
+                log: "preparing".to_string(),
+                state: tool_status::State::Preparing.into(),
+            },
+            ToolStatus::Dropped => grpc::ToolStatus {
+                log: "preparing".to_string(),
+                state: tool_status::State::Preparing.into(),
+            },
+        }
+    }
+}
+
+impl From<grpc::ToolStatus> for ToolStatus {
+    fn from(status: grpc::ToolStatus) -> Self {
+        match status.state() {
+            tool_status::State::Preparing => ToolStatus::Preparing,
+            tool_status::State::Ready => ToolStatus::Ready,
+            tool_status::State::Dropped => ToolStatus::Dropped,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -500,8 +531,9 @@ pub trait Dispatcher: Send + Sync + 'static {
     // TODO: for all types involved in the inner traits, should use mirror type of grpc type
     // because these traits are meant to be impl from lib, not from looking at gencode from
     // protobuf. Same for ToolService etc.
-    async fn launch(&self, tool: &ToolMeta, files: &[FileEntry]) -> anyhow::Result<ToolHandler>;
+    async fn launch(&self, tool: &ToolMeta, files: &[FileEntry]) -> anyhow::Result<String>;
     async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact>;
+    /// get status of a tool from its handler id.
     async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus>;
 }
 
@@ -519,9 +551,11 @@ impl Dataplayer {
     }
 }
 
-enum Artifact {
-    HostedTool,
-    EoscInlineTool,
+/// Artifact is the collection of information that user (matchmaker) can use to launch the tool
+#[derive(Debug, Clone)]
+pub enum Artifact {
+    HostedTool { callback: Url },
+    EoscInlineTool { callback: Url },
 }
 
 #[tonic::async_trait]
@@ -536,11 +570,9 @@ impl DataplayerService for Dataplayer {
         let tool_meta = &req.tool.clone().unwrap(); // FIXME: DONTPANIC
         let files_meta = &req.files;
 
-        let handler = self.dispatcher.launch(tool_meta, files_meta).await.unwrap();
+        let id = self.dispatcher.launch(tool_meta, files_meta).await.unwrap();
 
-        Ok(Response::new(LaunchResponse {
-            handler: Some(handler),
-        }))
+        Ok(Response::new(LaunchResponse { handler_id: id }))
     }
 
     async fn query(
@@ -558,21 +590,21 @@ impl DataplayerService for Dataplayer {
         let handler_id = &req.handler_id;
         // TODO: check the state of the tool is ready.
         let status = self.dispatcher.get_status(handler_id).await.unwrap();
-        if matches!(status, ToolStatus::Ready) {
+        if !matches!(status, ToolStatus::Ready) {
             return Err(Status::internal("tool not ready"));
         }
         let artifact = self.dispatcher.get_artifact(handler_id).await.unwrap();
 
         let ep = match artifact {
-            Artifact::HostedTool => {
+            Artifact::HostedTool { callback } => {
                 let hosted_tool = grpc::HostedTool {
-                    callback_url: "https://example.com".to_string(),
+                    callback_url: callback.to_string(),
                 };
                 EntryPoint::Hosted(hosted_tool)
             }
-            Artifact::EoscInlineTool => {
+            Artifact::EoscInlineTool { callback } => {
                 let hosted_tool = grpc::EoscInlineTool {
-                    callback_url: "https://example.com".to_string(),
+                    callback_url: callback.to_string(),
                 };
                 EntryPoint::EoscInline(hosted_tool)
             }
@@ -589,8 +621,11 @@ impl DataplayerService for Dataplayer {
     ) -> Result<Response<GetStatusResponse>, Status> {
         let req = req.get_ref();
         let handler_id = &req.id;
-        let status = self.dispatcher.get_status(handler_id).await.unwrap();
-        todo!()
+        let tool_status = self.dispatcher.get_status(handler_id).await.unwrap();
+
+        Ok(Response::new(GetStatusResponse {
+            status: Some(tool_status.into()),
+        }))
     }
 
     async fn monitor_status(

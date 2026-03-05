@@ -76,6 +76,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tools = resp.tools;
     dbg!(&tools);
 
+    // depend on tool registry whether want to have all information in one table, the tool-meta
+    // passed to dispatcher should in principle include all communication details in one payload.
+    // then the files might not enough to be just an array but a mapping into the slots that tool
+    // detail is expected.
     let mut client = DataplayerServiceClient::connect("http://[::1]:50051").await?;
     // XXX: assume that first tool is selected
     let tool = tools[1].clone();
@@ -88,17 +92,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.launch(request).await?.into_inner();
 
     // after launch, the communication is all through the handler returned
-    let tool_handler = resp.handler;
-    if let Some(handler) = tool_handler {
-        let id = handler.id;
-        let req = GetArtifactRequest { handler_id: id };
-        let resp = client.get_artifact(req).await?.into_inner();
-        let ep = resp.entry_point.unwrap();
-        let callback_url = match ep {
-            EntryPoint::EoscInline(t) => t.callback_url,
-            EntryPoint::Hosted(t) => t.callback_url,
-        };
-    }
+    let h_id = resp.handler_id;
+    let req = GetArtifactRequest { handler_id: h_id };
+    let resp = client.get_artifact(req).await?.into_inner();
+    let ep = resp.entry_point.unwrap();
+    let callback_url = match ep {
+        EntryPoint::EoscInline(t) => t.callback_url,
+        EntryPoint::Hosted(t) => t.callback_url,
+    };
 
     // a typical case to encorage user to stick with EOSC system is to get the return user a list
     // of tools status and a dashboard to see what they did, some summary for limit etc.
