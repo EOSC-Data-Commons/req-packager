@@ -245,7 +245,7 @@ message QueryUserRequest {
   User_Id user_id = 1;
 }
 message QueryUserResponse {
-  repeated ToolHandler th = 1;
+  repeated ToolHandler ths = 1;
 }
 
 message GetArtifactRequest {

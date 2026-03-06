@@ -2,6 +2,10 @@ pub mod grpc {
     tonic::include_proto!("req_packager.v1");
 }
 use futures_util::{StreamExt, TryStreamExt};
+use jsonwebtoken::{encode, EncodingKey, Header};
+use serde::Serialize;
+
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 
 use futures_core::stream::BoxStream;
 use grpc::{
@@ -13,6 +17,7 @@ use grpc::{
 };
 
 use prost_types::Timestamp;
+use serde::Deserialize;
 use std::{
     path::PathBuf,
     sync::{
@@ -531,12 +536,21 @@ pub trait Dispatcher: Send + Sync + 'static {
     // TODO: for all types involved in the inner traits, should use mirror type of grpc type
     // because these traits are meant to be impl from lib, not from looking at gencode from
     // protobuf. Same for ToolService etc.
-    async fn launch(&self, tool: &ToolMeta, files: &[FileEntry]) -> anyhow::Result<String>;
+    async fn launch(
+        &self,
+        uid: &str,
+        tool: &ToolMeta,
+        files: &[FileEntry],
+    ) -> anyhow::Result<String>;
     async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact>;
     /// get status of a tool from its handler id.
     async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus>;
+    async fn query_tools(&self, uid: &str) -> anyhow::Result<Vec<ToolHandler>>;
 }
 
+// NOTE: the flexibility of this abstraction is that I can have the persistency in dispatcher
+// Or there is option that the db persistency is a table decoupled from dispatcher.
+// I can have a "user states table" to record it if want to keep dispatcher very thin.
 pub struct Dataplayer {
     dispatcher: Arc<dyn Dispatcher>,
     tool_source: Arc<dyn ToolSource>,
@@ -558,6 +572,53 @@ pub enum Artifact {
     EoscInlineTool { callback: Url },
 }
 
+fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
+    let auth_header = req
+        .metadata()
+        .get("authorization")
+        .ok_or(Status::unauthenticated("Missing authorization header"))?;
+
+    let auth_str = auth_header
+        .to_str()
+        .map_err(|_| Status::unauthenticated("Invalid authorization header"))?;
+
+    if !auth_str.starts_with("Bearer ") {
+        return Err(Status::unauthenticated("Expected Bearer token"));
+    }
+
+    let token = &auth_str[7..]; // strip "Bearer "
+
+    // Decode JWT
+    let decoding_key = DecodingKey::from_secret(b"my_secret_key"); // or public key if RS256
+    let token_data = decode::<Claims>(token, &decoding_key, &Validation::new(Algorithm::HS256))
+        .map_err(|_| Status::unauthenticated("Invalid token"))?;
+
+    Ok(token_data.claims.sub)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Claims {
+    sub: String,
+    name: String,
+    role: String,
+    exp: usize,
+}
+
+pub fn create_token() -> String {
+    let claims = Claims {
+        sub: "user123".to_string(),
+        name: "Alice".to_string(),
+        role: "admin".to_string(),
+        exp: 1_999_999_999, // some expiration
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(b"my_secret_key"),
+    )
+    .unwrap()
+}
+
 #[tonic::async_trait]
 impl DataplayerService for Dataplayer {
     type MonitorStatusStream = ReceiverStream<Result<MonitorStatusResponse, Status>>;
@@ -566,11 +627,16 @@ impl DataplayerService for Dataplayer {
         &self,
         req: Request<LaunchRequest>,
     ) -> Result<Response<LaunchResponse>, Status> {
+        let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
         let tool_meta = &req.tool.clone().unwrap(); // FIXME: DONTPANIC
         let files_meta = &req.files;
 
-        let id = self.dispatcher.launch(tool_meta, files_meta).await.unwrap();
+        let id = self
+            .dispatcher
+            .launch(&user, tool_meta, files_meta)
+            .await
+            .unwrap();
 
         Ok(Response::new(LaunchResponse { handler_id: id }))
     }
@@ -579,7 +645,9 @@ impl DataplayerService for Dataplayer {
         &self,
         req: Request<QueryUserRequest>,
     ) -> Result<Response<QueryUserResponse>, Status> {
-        todo!()
+        let user = get_user_from_token(&req).unwrap();
+        let tools = self.dispatcher.query_tools(&user).await.unwrap();
+        Ok(Response::new(QueryUserResponse { ths: tools }))
     }
 
     async fn get_artifact(

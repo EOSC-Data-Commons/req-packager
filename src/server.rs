@@ -148,7 +148,12 @@ impl MockDispatcher {
 #[async_trait::async_trait]
 impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
-    async fn launch(&self, tool: &ToolMeta, files: &[grpc::FileEntry]) -> anyhow::Result<String> {
+    async fn launch(
+        &self,
+        uid: &str,
+        tool: &ToolMeta,
+        files: &[grpc::FileEntry],
+    ) -> anyhow::Result<String> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
         // mapping for what eosc user can access which vres. Should this all kept in an auth server
@@ -168,7 +173,7 @@ impl Dispatcher for MockDispatcher {
                 state: tool_status::State::Ready.into(),
             }),
             owner: Some(UserId {
-                inner: "user000".to_string(),
+                inner: uid.to_string(),
             }),
             id: id.to_string(),
         };
@@ -191,6 +196,22 @@ impl Dispatcher for MockDispatcher {
         let db = self.db_2.read().await;
         let hd = db.get(&Uuid::from_str(handler_id).unwrap()).unwrap();
         Ok(hd.clone())
+    }
+
+    async fn query_tools(&self, uid: &str) -> anyhow::Result<Vec<ToolHandler>> {
+        let db = self.db_1.read().await;
+        let out = db
+            .iter()
+            .filter_map(|(_uuid, th)| {
+                let owner_id = th.clone().owner.unwrap();
+                if uid == owner_id.inner {
+                    Some(th.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(out)
     }
 
     async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus> {

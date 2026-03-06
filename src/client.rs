@@ -1,13 +1,28 @@
-use req_packager::grpc::{
-    browse_dataset_response, dataplayer_service_client::DataplayerServiceClient,
-    dataset_service_client::DatasetServiceClient, get_artifact_response::EntryPoint,
-    tool_service_client::ToolServiceClient, tool_service_server::ToolService, BrowseDatasetRequest,
-    BrowseDatasetResponse, BrowseError, EoscInlineTool, FindToolsRequest, GetArtifactRequest,
-    HostedTool, LaunchRequest, QueryUserRequest, UserId,
+use req_packager::{
+    create_token,
+    grpc::{
+        browse_dataset_response, dataplayer_service_client::DataplayerServiceClient,
+        dataset_service_client::DatasetServiceClient, get_artifact_response::EntryPoint,
+        tool_service_client::ToolServiceClient, tool_service_server::ToolService,
+        BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, EoscInlineTool, FindToolsRequest,
+        GetArtifactRequest, HostedTool, LaunchRequest, QueryUserRequest, UserId,
+    },
 };
+use tonic::{metadata::MetadataValue, transport::Channel, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let token = create_token();
+    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse().unwrap();
+
+    let channel = Channel::from_static("http://[::1]:50051").connect().await?;
+
+    let mut client =
+        DatasetServiceClient::with_interceptor(channel.clone(), move |mut req: Request<()>| {
+            req.metadata_mut()
+                .insert("authorization", meta_token.clone());
+            Ok(req)
+        });
     // TODO:
     // - client list all the files in a dataset
     //  |- for every file, client go and get a lightweight tool for preview it
@@ -17,8 +32,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // information of which file is in which vre input slots).
     // - client get the realtime status update from VRE and get a callback link send back when it
     // is ready.
-    let mut client = DatasetServiceClient::connect("http://[::1]:50051").await?;
-
     // made up repo url and dataset id, should be mocked for test
     let url_datarepo = "https://example.com/datasets".to_string();
     let id_dataset = "1".to_string();
@@ -65,7 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // both end using the same function. This make the two ends can use strong type system to
     // formalize the message instead of using ro-crate which is not so easy to work with.
 
-    let mut client = ToolServiceClient::connect("http://[::1]:50051").await?;
+    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse().unwrap();
+    let mut client =
+        ToolServiceClient::with_interceptor(channel.clone(), move |mut req: Request<()>| {
+            req.metadata_mut()
+                .insert("authorization", meta_token.clone());
+            Ok(req)
+        });
     let request = tonic::Request::new(FindToolsRequest {
         files: files.clone(),
     });
@@ -80,7 +99,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // passed to dispatcher should in principle include all communication details in one payload.
     // then the files might not enough to be just an array but a mapping into the slots that tool
     // detail is expected.
-    let mut client = DataplayerServiceClient::connect("http://[::1]:50051").await?;
+    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse().unwrap();
+    let mut client =
+        DataplayerServiceClient::with_interceptor(channel.clone(), move |mut req: Request<()>| {
+            req.metadata_mut()
+                .insert("authorization", meta_token.clone());
+            Ok(req)
+        });
     // XXX: assume that first tool is selected
     let tool = tools[1].clone();
     // XXX: files here is the files drag-drop (automatically assigned to, or guess what slots need what??) into the VRE input slots.
@@ -101,6 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         EntryPoint::Hosted(t) => t.callback_url,
     };
 
+    dbg!(callback_url);
+
     // a typical case to encorage user to stick with EOSC system is to get the return user a list
     // of tools status and a dashboard to see what they did, some summary for limit etc.
     let req = QueryUserRequest {
@@ -109,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     };
     let result = client.query(req).await?.into_inner();
-    let handlers = result.th;
+    let handlers = result.ths;
     // print all status of these tool handlers
     for h in handlers {
         dbg!(h.state);
