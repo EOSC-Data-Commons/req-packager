@@ -53,14 +53,13 @@ fn current_timestamp() -> Timestamp {
 #[async_trait::async_trait]
 pub trait DataSource: Send + Sync + 'static {
     // get dataset information
-    async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo>;
+    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<DatasetInfo>;
     /// list files in the dataset
     /// # Errors
     /// ???
     fn list_files(
         &self,
-        url_datarepo: &str,
-        id: &str,
+        uuid: &str,
     ) -> anyhow::Result<BoxStream<'static, FileEntry>>;
 }
 
@@ -114,13 +113,14 @@ impl DatasetService for DataRelayer {
         tokio::spawn(async move {
             // INIT Phase
             let req = request.get_ref();
+            let uuid= &req.uuid;
             let url_datarepo = &req.url_datarepo;
             let id = &req.id_dataset;
 
             // TODO:
             // NOTE: datasets are with versions
             // while files are with modified/updated timestamps.
-            let dataset_info = match data_source.get_dataset_info(url_datarepo, id).await {
+            let dataset_info = match data_source.get_dataset_info(uuid).await {
                 Ok(info) => info,
                 Err(err) => {
                     let err = BrowseError {
@@ -159,7 +159,7 @@ impl DatasetService for DataRelayer {
             .ok();
 
             // Browsing, keep on sending file info of the dataset asynchronously
-            let files = match data_source.list_files(url_datarepo, id) {
+            let files = match data_source.list_files(uuid) {
                 Ok(files) => files,
                 Err(err) => {
                     let err = BrowseError {

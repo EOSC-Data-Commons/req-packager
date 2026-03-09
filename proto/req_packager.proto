@@ -37,10 +37,12 @@ message FileEntry {
 }
 
 message BrowseDatasetRequest {
+  // uuid
+  string uuid = 1;
   // Data repo identifier by url (opaque to client)
-  string url_datarepo = 1;
+  string url_datarepo = 2;
   // Dataset identifier (opaque to client)
-  string id_dataset = 2;
+  string id_dataset = 3;
 }
 
 message BrowseDatasetResponse {

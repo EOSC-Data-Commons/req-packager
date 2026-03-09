@@ -2,15 +2,50 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
-    Form, Json, Router,
     extract::{Path, Query},
     response::Html,
     routing::{get, post},
+    Form, Json, Router,
 };
-use humansize::{DECIMAL, make_format};
+use humansize::{make_format, DECIMAL};
+use jsonwebtoken::{encode, EncodingKey, Header};
+use once_cell::sync::Lazy;
+use req_packager::grpc::{
+    self, dataset_service_client::DatasetServiceClient, BrowseDatasetRequest,
+};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
+use tonic::{metadata::MetadataValue, transport::Channel};
 use tower_http::services::ServeDir;
+use uuid::Uuid;
+
+static DATASETS: Lazy<HashMap<Uuid, DatasetMeta>> = Lazy::new(|| {
+    let mut map = HashMap::new();
+
+    let items = vec![
+        DatasetMeta {
+            uuid: compute_uuid_from_string("https://example.com/datasets/0"),
+            description: "(dataverse) Replication dataset for the study 'Urban Mobility Patterns in European Cities'. Includes anonymized GPS traces and processed mobility networks.".to_string(),
+            source_url: "https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6M2OVH".to_string(),
+        },
+        DatasetMeta {
+            uuid: compute_uuid_from_string("https://example.com/datasets/1"),
+            description: "(hal) Experimental data and simulation scripts for 'Thermal transport in layered van der Waals materials'. Contains raw measurement data and analysis notebooks.".to_string(),
+            source_url: "https://hal.science/hal-04234567".to_string(),
+        },
+        DatasetMeta {
+            uuid: compute_uuid_from_string("https://example.com/datasets/2"),
+            description: "(zenodo) Dataset accompanying the publication 'Benchmarking Graph Neural Networks for Molecular Property Prediction'. Includes curated molecular graphs and training splits.".to_string(),
+            source_url: "https://zenodo.org/records/10456789".to_string(),
+        },
+    ];
+
+    for item in items {
+        map.insert(item.uuid, item);
+    }
+
+    map
+});
 
 pub fn templates() -> &'static Tera {
     static TEMPLATES: OnceLock<Tera> = OnceLock::new();
@@ -27,46 +62,101 @@ pub fn templates() -> &'static Tera {
     })
 }
 
-#[derive(Serialize)]
+pub fn get_dataset(uuid: &Uuid) -> Option<&'static DatasetMeta> {
+    DATASETS.get(uuid)
+}
+
+#[derive(Serialize, Debug)]
 struct FileMeta {
     data_path: String,
     filename: String,
     size: String,
-    mimetype: String,
+    mimetype: Option<String>,
 }
 
-async fn inspect_dataset_repo(Path(id): Path<u64>) -> Html<String> {
-    let formatter = make_format(DECIMAL);
+impl From<grpc::FileEntry> for FileMeta {
+    fn from(value: grpc::FileEntry) -> Self {
+        let formatter = make_format(DECIMAL);
+        Self {
+            data_path: value.path.clone(),
+            filename: value.path.clone(),
+            size: formatter(value.size_bytes),
+            mimetype: value.mime_type,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Claims {
+    sub: String,
+    name: String,
+    role: String,
+    exp: usize,
+}
+
+pub fn create_token() -> String {
+    let claims = Claims {
+        sub: "user123".to_string(),
+        name: "Alice".to_string(),
+        role: "admin".to_string(),
+        exp: 1_999_999_999, // some expiration
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(b"my_secret_key"),
+    )
+    .unwrap()
+}
+
+async fn fetch_dataset_files(uuid: &Uuid) -> Result<Vec<FileMeta>, Box<dyn std::error::Error>> {
+    let token = create_token();
+    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse()?;
+
+    let channel = Channel::from_static("http://[::1]:50051").connect().await?;
+
+    let mut client =
+        DatasetServiceClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+            req.metadata_mut()
+                .insert("authorization", meta_token.clone());
+            Ok(req)
+        });
+
+    let request = tonic::Request::new(BrowseDatasetRequest {
+        uuid: uuid.to_string(),
+        url_datarepo: "https://example.com/datasets".to_string(),
+        id_dataset: "1".to_string(),
+    });
+
+    let mut stream = client.browse_dataset(request).await?.into_inner();
+
+    let mut files = Vec::new();
+
+    while let Some(resp) = stream.message().await? {
+        if let Some(evt) = resp.event {
+            match evt {
+                grpc::browse_dataset_response::Event::FileEntry(entry) => {
+                    files.push(entry.into());
+                }
+                grpc::browse_dataset_response::Event::DatasetInfo(_) => {}
+                grpc::browse_dataset_response::Event::Progress(_) => {}
+                grpc::browse_dataset_response::Event::Complete(_) => break,
+                grpc::browse_dataset_response::Event::Error(err) => {
+                    eprintln!("error: {:?}", err);
+                }
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+async fn inspect_dataset_repo(Path(uuid): Path<Uuid>) -> Html<String> {
     // XXX: file list get from calling request on filemetrix
-    let file_vec: Vec<FileMeta> = vec![
-        FileMeta {
-            data_path: "/files/main.txt".to_string(),
-            filename: "main.txt".to_string(),
-            size: formatter(12_000_000u64),
-            mimetype: "txt".to_string(),
-        },
-        FileMeta {
-            data_path: "/files/dummy.tar.gz".to_string(),
-            filename: "dummy.tar.gz".to_string(),
-            size: formatter(54_000_000u64),
-            mimetype: "tar.gz".to_string(),
-        },
-        FileMeta {
-            data_path: "/files/data.csv".to_string(),
-            filename: "data.csv".to_string(),
-            size: formatter(12_400u64),
-            mimetype: "csv".to_string(),
-        },
-        FileMeta {
-            data_path: "/files/report.pdf".to_string(),
-            filename: "report.pdf".to_string(),
-            size: formatter(123_420u64),
-            mimetype: "pdf".to_string(),
-        },
-    ];
+    let files = fetch_dataset_files(&uuid).await.unwrap();
     let mut context = Context::new();
-    context.insert("id", &id);
-    context.insert("files", &file_vec);
+    context.insert("uuid", &uuid);
+    context.insert("files", &files);
     let html = templates()
         .render("dataset/file-list.html", &context)
         .unwrap();
@@ -259,29 +349,24 @@ async fn read_file(
     ))
 }
 
-#[derive(Serialize)]
-struct DatasetMeta {
-    id: String,
+#[derive(Serialize, Clone)]
+pub struct DatasetMeta {
+    uuid: Uuid,
     source_url: String,
     description: String,
 }
 
+fn compute_uuid_from_string(input: &str) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, input.as_bytes())
+}
+
 async fn search_result() -> Html<String> {
-    // XXX: this list is result get from calling data-common-search.
-    let ds_vec: Vec<DatasetMeta> = vec![
-        DatasetMeta {
-            id: "000".to_string(),
-            description: "xxxx00".to_string(),
-            source_url: "https://example.com/000".to_string(),
-        },
-        DatasetMeta {
-            id: "001".to_string(),
-            description: "xxxx01".to_string(),
-            source_url: "https://example.com/001".to_string(),
-        },
-    ];
+    // Mocked datasets similar to results returned from Dataverse / HAL / Zenodo
+    let ds_vec: Vec<&DatasetMeta> = DATASETS.values().collect();
+
     let mut context = Context::new();
     context.insert("datasets", &ds_vec);
+
     let html = templates().render("index.html", &context).unwrap();
     Html(html)
 }
@@ -291,23 +376,20 @@ struct Dataset {
     metadata: DatasetMeta,
 }
 
-async fn dataset(Path(id): Path<u64>) -> Html<String> {
-    // XXX: dataset and its metadata is from checking filemetrix service using <id>.
-    let desc = "Lorem ipsum dolor sit amet, 
-        consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore 
-        magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris 
-        nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit 
-        in voluptate velit esse cillum dolore eu fugiat nulla pariatur. 
-        Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia 
-        deserunt mollit anim id est laborum.";
-    let meta = DatasetMeta {
-        id: format!("{id}"),
-        description: desc.to_string(),
-        source_url: format!("https://example.com/{id}"),
-    };
-    let ds = Dataset { metadata: meta };
+async fn dataset(Path(uuid): Path<Uuid>) -> Html<String> {
     let mut context = Context::new();
-    context.insert("dataset000", &ds);
+    match get_dataset(&uuid) {
+        Some(ds) => {
+            let ds = Dataset {
+                metadata: ds.clone(),
+            };
+            context.insert("ds".to_string(), &ds);
+        }
+        None => {
+            return Html(format!("Dataset {} not found", uuid));
+        }
+    };
+
     let html = templates().render("dataset/index.html", &context).unwrap();
     Html(html)
 }

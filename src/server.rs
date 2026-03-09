@@ -36,17 +36,17 @@ struct Dataset {
 struct MockDataSource {
     // the key is a tuple, where 1st element is for datarepo url and the second is the id of the
     // dataset in the datarepo.
-    datasets: HashMap<(String, String), Dataset>,
+    datasets: HashMap<String, Dataset>,
 }
 
 impl MockDataSource {
     fn new(datasets: Vec<Dataset>) -> Self {
-        let datasets: HashMap<(String, String), Dataset> = datasets
+        let datasets: HashMap<String, Dataset> = datasets
             .into_iter()
             .map(|ds| {
                 let info = ds.info.clone();
-                let (url, id_ds) = (info.url, info.id);
-                ((url, id_ds), ds)
+                let uuid = compute_uuid_from_string(&format!("{}/{}", info.url, info.id));
+                (uuid.to_string(), ds)
             })
             .collect();
         MockDataSource { datasets }
@@ -55,35 +55,21 @@ impl MockDataSource {
 
 #[async_trait::async_trait]
 impl DataSource for MockDataSource {
-    async fn get_dataset_info(
-        &self,
-        url_datarepo: &str,
-        id: &str,
-    ) -> anyhow::Result<grpc::DatasetInfo> {
+    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<grpc::DatasetInfo> {
         // XXX: very fragile to use url+id, should be a PID or other primary key in DB.
-        match self
-            .datasets
-            .get(&(url_datarepo.to_string(), id.to_string()))
-        {
+        match self.datasets.get(uuid) {
             Some(dataset) => {
                 let info = dataset.info.clone();
                 Ok(info.into())
             }
             _ => {
-                anyhow::bail!("didn't find the dataset with {:?}", (url_datarepo, id))
+                anyhow::bail!("didn't find the dataset with {:?}", uuid)
             }
         }
     }
 
-    fn list_files(
-        &self,
-        url_datarepo: &str,
-        id: &str,
-    ) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
-        match self
-            .datasets
-            .get(&(url_datarepo.to_string(), id.to_string()))
-        {
+    fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
+        match self.datasets.get(uuid) {
             Some(dataset) => {
                 let files = dataset
                     .files
@@ -98,7 +84,7 @@ impl DataSource for MockDataSource {
                 Ok(stream)
             }
             _ => {
-                anyhow::bail!("didn't find the dataset with {:?}", (url_datarepo, id))
+                anyhow::bail!("didn't find the dataset with {:?}", uuid)
             }
         }
     }
@@ -224,6 +210,7 @@ impl Dispatcher for MockDispatcher {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct DatasetInfo {
+    uuid: Uuid,
     url: String,
     id: String,
     description: String,
@@ -334,6 +321,10 @@ fn generate_fake_files(total: u64) -> Vec<FileEntry> {
     entries
 }
 
+fn compute_uuid_from_string(input: &str) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, input.as_bytes())
+}
+
 fn generate_datasets() -> Vec<Dataset> {
     let mut rng = rng();
 
@@ -352,8 +343,7 @@ fn generate_datasets() -> Vec<Dataset> {
         let created = now - Duration::days(rng.random_range(10..100));
         let updated = created + Duration::days(rng.random_range(1..10));
 
-        let total_files = rng.random_range(5..50);
-        dbg!(total_files);
+        let total_files = rng.random_range(1..10);
         let total_size_bytes = rng.random_range(10_000_000..500_000_000);
 
         let mut tags = HashMap::new();
@@ -361,7 +351,10 @@ fn generate_datasets() -> Vec<Dataset> {
             tags.insert(k.to_string(), v.to_string());
         }
 
+        let input = format!("https://example.com/datasets/{i}");
+        let uuid = compute_uuid_from_string(&input);
         let info = DatasetInfo {
+            uuid,
             url: "https://example.com/datasets".to_string(),
             id: format!("{i}"),
             description: format!("Mock dataset number {i}"),
