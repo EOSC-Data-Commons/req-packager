@@ -246,6 +246,7 @@ impl From<DatasetInfo> for grpc::DatasetInfo {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct FileEntry {
+    download_url: Option<String>,
     path: String,
     is_dir: bool,
     size_bytes: u64,
@@ -261,6 +262,7 @@ impl From<FileEntry> for grpc::FileEntry {
             nanos: 0,
         };
         grpc::FileEntry {
+            download_url: f.download_url,
             path: f.path,
             is_dir: f.is_dir,
             size_bytes: f.size_bytes,
@@ -290,6 +292,7 @@ fn generate_fake_files(total: u64) -> Vec<FileEntry> {
 
     for dir in &dirs {
         entries.push(FileEntry {
+            download_url: None,
             path: dir.to_string(),
             is_dir: true,
             size_bytes: 0,
@@ -299,6 +302,14 @@ fn generate_fake_files(total: u64) -> Vec<FileEntry> {
         });
     }
 
+    // XXX: this is very dummy, the file itself not conform with the mimetype.
+    let download_urls = [
+        "https://filesamples.com/samples/image/hdr/sample_640%C3%97426.hdr",
+        "https://filesamples.com/samples/image/png/sample_640%C3%97426.png",
+        "https://filesamples.com/samples/image/png/sample_5184%C3%973456.png",
+        "https://filesamples.com/samples/image/tiff/sample_1280%C3%97853.tiff",
+    ];
+
     // Generate files inside directories
     for i in 0..total {
         let parent = dirs.choose(&mut rng).unwrap();
@@ -307,9 +318,14 @@ fn generate_fake_files(total: u64) -> Vec<FileEntry> {
         let modified = now - Duration::days(rng.random_range(0..30));
 
         let mime = mime_types.choose(&mut rng).unwrap();
+        let path = format!("{parent}/file_{i}.dat");
+        let download_url = download_urls.choose(&mut rng).unwrap();
 
         entries.push(FileEntry {
-            path: format!("{parent}/file_{i}.dat"),
+            download_url: Some(download_url.to_string()),
+            // XXX: this may not be used in the ui in the end, but it should be the
+            // __ROOT__<path>
+            path,
             is_dir: false,
             size_bytes: size,
             mime_type: Some(mime.to_string()),

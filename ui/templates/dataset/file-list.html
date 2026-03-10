@@ -17,23 +17,25 @@
             <input 
               type="checkbox"
               name="{{file.filename}}"
-              value="{{ file.data_path }}"
+              value="{{ file.download_url }}"
             />
-            <span class="name">{{ file.filename }}</span>
+            <span class="name">{{ file.filename }}{% if file.is_dir %}/{% endif %}</span>
             <span class="meta">
               <span class="type">{{ file.mimetype }}</span>
               <span class="size">{{ file.size }}</span>
             </span>
+            {% if not file.is_dir %}
             <!-- tool button for file -->
             <button 
             class="tool-btn" 
             title="preview" 
-            hx-get="{{ file.data_path }}"
+            hx-get="/preview"
             hx-target="#file-preview"
             hx-swap="outerHTML"
-            hx-vals='{"path": "__ROOT__{{ file.data_path }}"}'>
+            hx-vals='{"mimetype": "{{ file.mimetype }}", "url": "{{ file.download_url}}"}'>
               preview
             </button>
+            {% endif %}
             <!-- dropdown button -->
             <div class="dropdown">
               <button onclick="console.log('dropdown')" class="dropdown-btn" data-action="toggle-dropdown" type="button">Open with ▾</button>
@@ -45,9 +47,13 @@
                 <button onclick="console.log('Tool 3 clicked')" type="button">Tool 3</button>
               </div>
             </div>
-            <button data-action="download-file" data-path="{{ file.data_path }}" type="button">
-              Download
-            </button>
+            <a
+              href="/download?url={{ file.download_url }}"
+              target="_blank"
+              rel="noopener"
+            >
+              <button type="button">Download</button>
+            </a>
           </li>
           {% endfor %}
         </ul>

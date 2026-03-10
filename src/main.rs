@@ -1,9 +1,10 @@
 #![allow(clippy::unused_async, clippy::too_many_lines)]
+use futures_util::StreamExt;
 use std::{collections::HashMap, sync::OnceLock};
 
 use axum::{
     extract::{Path, Query},
-    response::Html,
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Form, Json, Router,
 };
@@ -13,8 +14,10 @@ use once_cell::sync::Lazy;
 use req_packager::grpc::{
     self, dataset_service_client::DatasetServiceClient, BrowseDatasetRequest,
 };
+use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
+use tokio_util::io::StreamReader;
 use tonic::{metadata::MetadataValue, transport::Channel};
 use tower_http::services::ServeDir;
 use uuid::Uuid;
@@ -68,9 +71,11 @@ pub fn get_dataset(uuid: &Uuid) -> Option<&'static DatasetMeta> {
 
 #[derive(Serialize, Debug)]
 struct FileMeta {
+    download_url: Option<String>,
     data_path: String,
     filename: String,
     size: String,
+    is_dir: bool,
     mimetype: Option<String>,
 }
 
@@ -78,9 +83,11 @@ impl From<grpc::FileEntry> for FileMeta {
     fn from(value: grpc::FileEntry) -> Self {
         let formatter = make_format(DECIMAL);
         Self {
+            download_url: value.download_url,
             data_path: value.path.clone(),
             filename: value.path.clone(),
             size: formatter(value.size_bytes),
+            is_dir: value.is_dir,
             mimetype: value.mime_type,
         }
     }
@@ -322,22 +329,24 @@ async fn vre_with_id(Path(id): Path<u64>) -> Html<String> {
     }
 }
 
-async fn read_file(
-    Path(filename): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Html<String> {
+async fn preview_file(Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    let download_url = params.get("url").unwrap();
     let content = format!(
-        "// mock preview\n// filename: {filename}\n\nfn main() {{\n    println!(\"hello\");\n}}"
+        "// mock preview\n// filename: I'll streaming file to tmp from {download_url} and print it here,\n\n this is only for demo purpose, depend on the mime-type I use different EOSC builtin tools to open and preview the file\n\nfn main() {{\n    println!(\"hello\");\n}}"
     );
 
-    let full_path = params.get("path").unwrap_or(&filename);
+    let title = format!(
+        "on url: {}, with mime-type: {}",
+        download_url,
+        params.get("mimetype").unwrap_or(&"unknown".to_string())
+    );
 
     // XXX: hx-on is not working.
     Html(format!(
         r#"
 <div id="file-preview" style="display:block;">
   <div id="file-preview-header">
-    <span id="file-preview-title">{full_path}</span>
+    <span id="file-preview-title">{title}</span>
     <button
       hx-on:click="this.closest('#file-preview').style.display='none'">
       ✖
@@ -347,6 +356,51 @@ async fn read_file(
 </div>
 "#,
     ))
+}
+
+async fn download_file(Query(params): Query<HashMap<String, String>>) -> Response {
+    // Get the remote URL
+    let remote_url = match params.get("url") {
+        Some(url) => url,
+        None => return (axum::http::StatusCode::BAD_REQUEST, "Missing url").into_response(),
+    };
+
+    // Determine mimetype (optional, fallback to generic)
+    let mimetype = params
+        .get("mimetype")
+        .map(|s| s.as_str())
+        .unwrap_or("application/octet-stream");
+
+    // Fetch the remote file
+    dbg!(remote_url);
+    let resp = match reqwest::get(remote_url).await {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Failed to fetch remote file",
+            )
+                .into_response()
+        }
+    };
+
+    // Map reqwest Bytes stream to Result<hyper::Chunk, std::io::Error>
+    let stream = resp.bytes_stream();
+    // TODO: this works well for small files, but not chunked if files are large, in EOSC, it is
+    // reasonable to make this assumption.
+    let body = axum::body::Body::from_stream(stream);
+
+    // Extract filename from URL
+    let filename = remote_url.split('/').next_back().unwrap_or("file.dat");
+
+    Response::builder()
+        .header(CONTENT_TYPE, mimetype)
+        .header(
+            CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .body(body)
+        .unwrap()
 }
 
 #[derive(Serialize, Clone)]
@@ -437,7 +491,10 @@ async fn main() {
         .route("/datasets/{id}", get(dataset))
         .route("/datasets/{id}/repo", get(inspect_dataset_repo))
         .route("/repo-additional", get(repo_additional))
-        .route("/files/{filename}", get(read_file))
+        // preview with the download_url that `preview_file` can stream and read, with query passed
+        // in indicate which mime-type it is etc.
+        .route("/preview", get(preview_file))
+        .route("/download", get(download_file))
         .route("/vre-recommend-from-files", post(vre_recommend_from_files))
         .route("/vre/{id}", get(vre_with_id));
 
