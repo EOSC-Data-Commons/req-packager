@@ -12,7 +12,7 @@
     <h2>Description</h2>
     <div>
       <p>
-        {{ dataset000.metadata.description }}
+        {{ ds.metadata.description }}
       </p>
     </div>
     <!-- Modal container -->
@@ -23,7 +23,7 @@
         <h2>Files</h2>
         <div id="repos">
           <div
-            hx-get="/datasets/{{ dataset000.metadata.id }}/repo"
+            hx-get="/datasets/{{ ds.metadata.uuid }}/repo"
             hx-trigger="load"
             hx-swap="innerHTML">
             <span>Loading files…</span>
@@ -31,6 +31,7 @@
           </div>
           <div id="file-list"></div>
         </div>
+        <h3>Inject your extra dataset:</h3>
         <div class="input-row">
           <input type="text" name="item[]" placeholder="https//github.com/eosc/ui-example">
           <!-- "+" button triggers htmx request -->

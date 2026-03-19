@@ -15,6 +15,22 @@ This payload is then send to the [`dispatcher`](https://github.com/EOSC-Data-Com
 
 The highlevel design notes can be found at `design.md`.
 
+## How to run 
+
+start the coordinator server.
+
+```console
+cargo run --bin rp
+```
+
+start the UI server.
+
+```console
+cargo run --bin ui
+```
+
+Go to 127.0.0.1:3000 on the browser.
+
 ## License
 
 All contributions must retain this attribution.
