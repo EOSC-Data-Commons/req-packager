@@ -12,13 +12,14 @@ use humansize::{make_format, DECIMAL};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use once_cell::sync::Lazy;
 use req_packager::grpc::{
-    self, dataset_service_client::DatasetServiceClient, BrowseDatasetRequest,
+    self, dataset_service_client::DatasetServiceClient, tool_service_client::ToolServiceClient,
+    BrowseDatasetRequest, FindToolsRequest, ToolMeta,
 };
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 use tokio_util::io::StreamReader;
-use tonic::{metadata::MetadataValue, transport::Channel};
+use tonic::{metadata::MetadataValue, transport::Channel, Request};
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
@@ -69,7 +70,7 @@ pub fn get_dataset(uuid: &Uuid) -> Option<&'static DatasetMeta> {
     DATASETS.get(uuid)
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 struct FileMeta {
     download_url: Option<String>,
     data_path: String,
@@ -89,6 +90,22 @@ impl From<grpc::FileEntry> for FileMeta {
             size: formatter(value.size_bytes),
             is_dir: value.is_dir,
             mimetype: value.mime_type,
+        }
+    }
+}
+
+impl From<FileMeta> for grpc::FileEntry {
+    fn from(value: FileMeta) -> Self {
+        // FIXME: I should not get it from text type send from request, better way to get the
+        // original data structure??
+        Self {
+            download_url: value.download_url,
+            path: value.data_path.clone(),
+            size_bytes: 0,
+            is_dir: value.is_dir,
+            mime_type: value.mimetype,
+            checksum: None,
+            modified_at: None,
         }
     }
 }
@@ -176,32 +193,36 @@ async fn repo_additional() -> Html<&'static str> {
 <ul class="tree" id="tree">
   <details open>
     <summary>
-      <span class="repo" data-path="src">https//github.com/eosc/ui-example</span>
+      <span class="repo" data-path="src">https://github.com/eosc/ui-example</span>
     </summary>
     <ul>
       <!-- Root folder -->
       <li>
         <details data-path="src" open>
           <summary>
-            <span class="folder" data-path="src">src</span>
+            <span class="folder" data-path="src">📁 src</span>
           </summary>
           <ul>
             <!-- Nested folder -->
             <li>
               <details data-path="src/components">
                 <summary>
-                  <span class="folder" data-path="src/components">components</span>
+                  <span class="folder" data-path="src/components">📁 components</span>
                 </summary>
                 <ul>
                   <li class="file" data-path="src/components/button.tsx">
-                    <span class="name">Button.tsx</span>
+                    <span class="name">📄</span>
+                    <input type="checkbox" class="file-checkbox" data-path="src/components/button.tsx">
+                    <span class="filename">Button.tsx</span>
                     <span class="meta">
                       <span class="type">tsx</span>
                       <span class="size">5 KB</span>
                     </span>
                   </li>
                   <li class="file" data-path="src/components/modal.tsx">
-                    <span class="name">Modal.tsx</span>
+                    <span class="name">📄</span>
+                    <input type="checkbox" class="file-checkbox" data-path="src/components/modal.tsx">
+                    <span class="filename">Modal.tsx</span>
                     <span class="meta">
                       <span class="type">tsx</span>
                       <span class="size">7 KB</span>
@@ -212,57 +233,25 @@ async fn repo_additional() -> Html<&'static str> {
             </li>
             <!-- Files inside src -->
             <li class="file" data-path="src/main.ts">
-              <span class="name">main.ts</span>
+              <span class="name">📄</span>
+              <input type="checkbox" class="file-checkbox" data-path="src/main.ts">
+              <span class="filename">main.ts</span>
               <span class="meta">
                 <span class="type">ts</span>
                 <span class="size">12 KB</span>
               </span>
             </li>
             <li class="file" data-path="src/data.csv">
-              <span class="name">data.csv</span>
+              <span class="name">📄</span>
+              <input type="checkbox" class="file-checkbox" data-path="src/data.csv">
+              <span class="filename">data.csv</span>
               <span class="meta">
                 <span class="type">csv</span>
                 <span class="size">2.1 MB</span>
               </span>
             </li>
-            <li class="file" data-path="src/report.pdf">
-              <span class="name">report.pdf</span>
-              <span class="meta">
-                <span class="type">pdf</span>
-                <span class="size">840 KB</span>
-              </span>
-            </li>
-            <li class="file" data-path="src/index.html">
-              <span class="name">index.html</span>
-              <span class="meta">
-                <span class="type">html</span>
-                <span class="size">6 KB</span>
-              </span>
-            </li>
           </ul>
         </details>
-      </li>
-      <!-- Config files at root -->
-      <li class="file" data-path=".gitignore">
-        <span class="name">.gitignore</span>
-        <span class="meta">
-          <span class="type">txt</span>
-          <span class="size">512 B</span>
-        </span>
-      </li>
-      <li class="file" data-path="package.json">
-        <span class="name">package.json</span>
-        <span class="meta">
-          <span class="type">json</span>
-          <span class="size">1 KB</span>
-        </span>
-      </li>
-      <li class="file" data-path="tsconfig.json">
-        <span class="name">tsconfig.json</span>
-        <span class="meta">
-          <span class="type">json</span>
-          <span class="size">2 KB</span>
-        </span>
       </li>
     </ul>
   </details>
@@ -308,7 +297,7 @@ async fn vre_with_id(Path(id): Path<u64>) -> Html<String> {
 <h3>VRE entity: {id}</h3>
 <div class="vre-description">
   <p>
-    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore
+    Duis aute irure dolor in reprehenderit 
   </p>
 </div>
 <div class="launch">
@@ -448,37 +437,86 @@ async fn dataset(Path(uuid): Path<Uuid>) -> Html<String> {
     Html(html)
 }
 
+async fn find_tools(files: &[FileMeta]) -> Result<Vec<ToolMeta>, Box<dyn std::error::Error>> {
+    let token = create_token();
+    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse()?;
+
+    let channel = Channel::from_static("http://[::1]:50051").connect().await?;
+
+    let mut client =
+        ToolServiceClient::with_interceptor(channel.clone(), move |mut req: Request<()>| {
+            req.metadata_mut()
+                .insert("authorization", meta_token.clone());
+            Ok(req)
+        });
+    let request = tonic::Request::new(FindToolsRequest {
+        files: files.iter().map(|f| f.clone().into()).collect(),
+    });
+    let resp = client.find_tools(request).await?.into_inner();
+    let tools = resp.tools;
+
+    Ok(tools)
+}
+
 async fn vre_recommend_from_files(Form(form): Form<HashMap<String, String>>) -> Html<String> {
     // XXX: mock behavior that:
     // 1. one file select => vre1
     // 2. two files select => vre2
     // 3. else number of files select => vre2 + vre3
+    let file_list = if form.is_empty() {
+        "".to_string()
+    } else {
+        let files = form
+            .iter()
+            .enumerate()
+            .map(|(i, (f1, _))| format!("idx:{}, {}", i, f1))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(" got files {}", files)
+    };
+
     match form.len() {
-        0 => Html(r"
+        0 => Html(format!(
+            r"
           <h3>Recommonded VREs:</h3>
           <div>
+            <p>{file_list}</p>
+            </br>
             No file selected.
           </div>
-    ".to_string()),
-        1 => Html(r##"
+    "
+        )),
+        1 => Html(format!(
+            r##"
           <h3>Recommonded VREs:</h3>
           <div>
+            <p>{file_list}</p>
+            </br>
             <button onclick="console.log('vre 1 clicked')" type="button" hx-get="/vre/1" hx-target="#vre" hx-swap="innerHTML">vre 1</button>
           </div>
-    "##.to_string()),
-        2 => Html(r##"
+    "##
+        )),
+        2 => Html(format!(
+            r##"
           <h3>Recommonded VREs:</h3>
           <div>
+            <p>{file_list}</p>
+            </br>
             <button onclick="console.log('vre 2 clicked')" type="button" hx-get="/vre/2" hx-target="#vre" hx-swap="innerHTML">vre 2</button>
           </div>
-    "##.to_string()),
-        _ => Html(r##"
+    "##
+        )),
+        _ => Html(format!(
+            r##"
           <h3>Recommonded VREs:</h3>
           <div>
+            <p>{file_list}</p>
+            </br>
             <button onclick="console.log('vre 1 clicked')" type="button" hx-get="/vre/1" hx-target="#vre" hx-swap="innerHTML">vre 1</button>
             <button onclick="console.log('vre 2 clicked')" type="button" hx-get="/vre/2" hx-target="#vre" hx-swap="innerHTML">vre 2</button>
           </div>
-    "##.to_string()),
+    "##
+        )),
     }
 }
 

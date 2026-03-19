@@ -14,11 +14,20 @@
         <ul>
           {% for file in files %}
           <li class="file"">
+            <span class="icon">
+              {% if file.is_dir %}
+                📁
+              {% else %}
+                📄
+              {% endif %}
+            </span>
+            {% if not file.is_dir %}
             <input 
               type="checkbox"
               name="{{file.filename}}"
               value="{{ file.download_url }}"
             />
+            {% endif %}
             <span class="name">{{ file.filename }}{% if file.is_dir %}/{% endif %}</span>
             <span class="meta">
               <span class="type">{{ file.mimetype }}</span>

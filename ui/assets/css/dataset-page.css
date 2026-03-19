@@ -139,10 +139,22 @@ body {
   overflow-wrap: anywhere;
 }
 
+.vre-inputs {
+  max-width: 300px;   /* limit total width */
+  margin: 0 auto;     /* center horizontally */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .vre-selection {
   display: flex;
-  flex-direction: column; /* stack buttons inside selection */
+  flex-direction: column; /* stack buttons */
   gap: 12px;
+
+  width: 300px;      /* fixed column width */
+  height: 200px;     /* fixed column height */
+  overflow-y: auto;  /* scroll if content exceeds height */
 }
 
 .vre-slots {
