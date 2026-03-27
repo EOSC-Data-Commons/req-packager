@@ -2,7 +2,7 @@ use async_stream::stream;
 use datahugger::{
     crawl,
     crawler::{CrawlerError, ProgressManager},
-    resolve, Entry, FileMeta,
+    resolve, resolve_doi_to_url, Entry, FileMeta,
 };
 use exn::Exn;
 use futures::TryStreamExt;
@@ -128,13 +128,19 @@ impl DataSource for DatahuggerDataSource {
     }
 
     async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
-        let url = uuid;
-        let ds = resolve(url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let user_agent = format!(
             "datahugger-over-eosc-coordinator/{}",
             env!("CARGO_PKG_VERSION")
         );
         let client = ClientBuilder::new().user_agent(user_agent).build()?;
+        let mut url = uuid.to_string();
+        if url.starts_with("https://doi.org/") {
+            let doi = url.trim_start_matches("https://doi.org/");
+            url = resolve_doi_to_url(&client, doi, true)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        }
+        let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let mp = NoProgress;
         let files = ds
             .crawl_file(&client, mp)
@@ -473,6 +479,10 @@ fn generate_tools() -> Vec<ToolMeta> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("info") // filter logs by level
+        .init();
+
     let addr = "[::1]:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and based on their are less updated, query is faster

@@ -155,6 +155,7 @@ impl DatasetService for DataRelayer {
             let files = match data_source.list_files(url).await {
                 Ok(files) => files,
                 Err(err) => {
+                    tracing::error!("cannot resolve files from url: {url}");
                     let err = BrowseError {
                         code: ErrorCode::UnavailableFilemetrix as i32,
                         message: format!(

@@ -52,6 +52,8 @@ hyper = "1.8.1"
 datahugger = { path = "../../rust/datahugger-rs" }
 exn = "0.3.0"
 indicatif = "0.18.4"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
 
 [build-dependencies]
 tonic-prost-build = "*"

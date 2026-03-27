@@ -2209,6 +2209,8 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tower-http",
+ "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
