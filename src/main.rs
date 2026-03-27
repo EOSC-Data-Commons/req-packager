@@ -104,6 +104,7 @@ impl From<FileMeta> for grpc::FileEntry {
             size_bytes: 0,
             is_dir: value.is_dir,
             mime_type: value.mimetype,
+            checksum_type: None,
             checksum: None,
             modified_at: None,
         }

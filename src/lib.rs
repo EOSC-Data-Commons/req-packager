@@ -1,5 +1,5 @@
 pub mod grpc {
-    tonic::include_proto!("req_packager.v1");
+    include!("./generated/req_packager.v1.rs");
 }
 use futures_util::{StreamExt, TryStreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -33,11 +33,12 @@ use url::Url;
 
 use crate::grpc::{
     dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
-    tool_service_server::ToolService, tool_status, BrowseToolsRequest, BrowseToolsResponse,
-    DropRequest, DropResponse, EoscInlineTool, FindToolsRequest, FindToolsResponse,
-    GetArtifactRequest, GetArtifactResponse, GetStatusRequest, GetStatusResponse, GetToolRequest,
-    HostedTool, LaunchRequest, LaunchResponse, MonitorStatusRequest, MonitorStatusResponse,
-    QueryUserRequest, QueryUserResponse, ToolHandler, ToolMeta, ToolResponse,
+    tool_service_server::ToolService, tool_status, BrowseDatasetByUrlRequest, BrowseToolsRequest,
+    BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, FindToolsRequest,
+    FindToolsResponse, GetArtifactRequest, GetArtifactResponse, GetStatusRequest,
+    GetStatusResponse, GetToolRequest, HostedTool, LaunchRequest, LaunchResponse,
+    MonitorStatusRequest, MonitorStatusResponse, QueryUserRequest, QueryUserResponse, ToolHandler,
+    ToolMeta, ToolResponse,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -57,10 +58,7 @@ pub trait DataSource: Send + Sync + 'static {
     /// list files in the dataset
     /// # Errors
     /// ???
-    fn list_files(
-        &self,
-        uuid: &str,
-    ) -> anyhow::Result<BoxStream<'static, FileEntry>>;
+    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>>;
 }
 
 #[derive(Debug)]
@@ -96,6 +94,179 @@ impl DataRelayer {
 #[tonic::async_trait]
 impl DatasetService for DataRelayer {
     type BrowseDatasetStream = ReceiverStream<Result<BrowseDatasetResponse, Status>>;
+    type BrowseDatasetByUrlStream = ReceiverStream<Result<BrowseDatasetResponse, Status>>;
+
+    async fn browse_dataset_by_url(
+        &self,
+        request: Request<BrowseDatasetByUrlRequest>,
+    ) -> Result<Response<Self::BrowseDatasetByUrlStream>, Status> {
+        // TODO: tracing
+        println!("Got a request: {request:?}");
+        let (tx, rx) = mpsc::channel(16);
+        let data_source = Arc::clone(&self.data_source);
+
+        tokio::spawn(async move {
+            // INIT Phase
+            let req = request.get_ref();
+            let url = &req.url;
+
+            // TODO:
+            // NOTE: datasets are with versions
+            // while files are with modified/updated timestamps.
+            let dataset_info = match data_source.get_dataset_info(url).await {
+                Ok(info) => info,
+                Err(err) => {
+                    let err = BrowseError {
+                        code: ErrorCode::UnavailableFilemetrix as i32,
+                        message: format!("unable to get dataset info of url: {url}, because of filemetrix error: {err}"),
+                        path: None,
+                        fatal: true,
+                    };
+                    tx.send(Ok(BrowseDatasetResponse {
+                        phase: BrowsePhase::PhaseInit as i32,
+                        event: Some(Event::Error(err)),
+                    }))
+                    .await
+                    .ok();
+
+                    return;
+                }
+            };
+            tx.send(Ok(BrowseDatasetResponse {
+                phase: BrowsePhase::PhaseInit as i32,
+                event: Some(Event::DatasetInfo(dataset_info.clone())),
+            }))
+            .await
+            .ok();
+
+            tx.send(Ok(BrowseDatasetResponse {
+                phase: BrowsePhase::PhaseBrowsing as i32,
+                event: Some(Event::Progress(BrowseProgress {
+                    files_scanned: 0,
+                    bytes_scanned: 0,
+                    percent: 0,
+                    path: None,
+                })),
+            }))
+            .await
+            .ok();
+
+            // Browsing, keep on sending file info of the dataset asynchronously
+            let files = match data_source.list_files(url).await {
+                Ok(files) => files,
+                Err(err) => {
+                    let err = BrowseError {
+                        code: ErrorCode::UnavailableFilemetrix as i32,
+                        message: format!(
+                            "unable to list files from url: {url}, because of filemetrix error: {err}"
+                        ),
+                        path: None,
+                        fatal: true,
+                    };
+                    tx.send(Ok(BrowseDatasetResponse {
+                        phase: BrowsePhase::PhaseInit as i32,
+                        event: Some(Event::Error(err)),
+                    }))
+                    .await
+                    .ok();
+
+                    return;
+                }
+            };
+
+            let files_count = Arc::new(AtomicU64::new(0));
+            let bytes_count = Arc::new(AtomicU64::new(0));
+            // TODO: I may want to have pagination to at most showing 100 entries by default.
+            // I need then have sever wait for incomming message to continue, bilateral required
+            // and input needs to be a stream.
+            files.for_each_concurrent(10, |file| {
+                // dbg!(files_count);
+                let tx = tx.clone();
+                let dataset_info = dataset_info.clone();
+                let files_count = files_count.clone();
+                let bytes_count = bytes_count.clone();
+                async move {
+                    let filepath = file.path.clone();
+                    let sizebytes = file.size_bytes;
+                    if let Err(err) = tx
+                        .send(Ok(BrowseDatasetResponse {
+                            phase: BrowsePhase::PhaseBrowsing as i32,
+                            event: Some(Event::FileEntry(file.clone())),
+                        }))
+                        .await
+                    {
+                        // Err
+                        let err = BrowseError {
+                            code: ErrorCode::UnavailableFile as i32,
+                            message: format!("unable to send file: {url} file: {filepath} to client, because of: {err}"),
+                            path: None,
+                            fatal: true,
+                        };
+                        tx.send(Ok(BrowseDatasetResponse {
+                            phase: BrowsePhase::PhaseInit as i32,
+                            event: Some(Event::Error(err)),
+                        }))
+                        .await
+                        .ok();
+                    } else {
+                        // Ok
+                        let (new_files, new_bytes) = if !file.is_dir {
+                            let new_files = files_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+                            let new_bytes =
+                                bytes_count.fetch_add(sizebytes, Ordering::Relaxed)
+                                + sizebytes;
+                            (new_files, new_bytes)
+                        } else {
+                            (0,0)
+                        };
+                        tx.send(Ok(BrowseDatasetResponse {
+                            phase: BrowsePhase::PhaseBrowsing as i32,
+                            event: Some(Event::Progress(BrowseProgress {
+                                files_scanned: new_files,
+                                bytes_scanned: new_bytes,
+                                // FIXME: don't calculate percent in server side, because the
+                                // respond arrive in client side without orders.
+                                #[allow(clippy::cast_possible_truncation)]
+                                percent: ((new_files as f64
+                                    / dataset_info.total_files() as f64) * 100.0) as u32,
+                                path: None,
+                        })),
+                        }))
+                        .await
+                        .ok();
+                    };
+
+                    // TODO: further operations include:
+                    // 1. file download, provide here? yes and calling scanning for mime-type and
+                    //    checksum automatically if the file is small (this rely on the file size must
+                    //    know beforehead).
+                    // 3. mime type deduct?? should this purely be the responsibility of filemetrix??
+                    //    (yes here)
+                    // 2. relay file to the VREs? in a separated step? (in the seprated step)
+                }
+            }).await;
+
+            let files_count = files_count.load(Ordering::Relaxed);
+            let bytes_count = bytes_count.load(Ordering::Relaxed);
+            let success = files_count == dataset_info.total_files()
+                && bytes_count == dataset_info.total_size_bytes();
+
+            tx.send(Ok(BrowseDatasetResponse {
+                phase: BrowsePhase::PhaseCompleted as i32,
+                event: Some(Event::Complete(BrowseComplete {
+                    total_files: files_count,
+                    total_size_bytes: bytes_count,
+                    success,
+                    finish_at: Some(current_timestamp()),
+                })),
+            }))
+            .await
+            .ok();
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
 
     /// browse dataset through filemetrix API calls.
     /// XXX: I am expecting more than what filemetrix can provide.
@@ -113,7 +284,7 @@ impl DatasetService for DataRelayer {
         tokio::spawn(async move {
             // INIT Phase
             let req = request.get_ref();
-            let uuid= &req.uuid;
+            let uuid = &req.uuid;
             let url_datarepo = &req.url_datarepo;
             let id = &req.id_dataset;
 
@@ -159,7 +330,7 @@ impl DatasetService for DataRelayer {
             .ok();
 
             // Browsing, keep on sending file info of the dataset asynchronously
-            let files = match data_source.list_files(uuid) {
+            let files = match data_source.list_files(uuid).await {
                 Ok(files) => files,
                 Err(err) => {
                     let err = BrowseError {
