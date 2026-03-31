@@ -323,11 +323,14 @@ pub mod tool_status {
 /// We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool.
 /// This interface high likely will be full re-definded.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LaunchRequest {
-    #[prost(message, optional, tag = "1")]
-    pub tool: ::core::option::Option<ToolMeta>,
-    #[prost(message, repeated, tag = "2")]
-    pub files: ::prost::alloc::vec::Vec<FileEntry>,
+pub struct LaunchToolRequest {
+    #[prost(string, tag = "1")]
+    pub tool_id: ::prost::alloc::string::String,
+    #[prost(map = "string, message", tag = "2")]
+    pub slots_mapping: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        FileEntry,
+    >,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserId {
@@ -344,7 +347,7 @@ pub struct ToolHandler {
     pub id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct LaunchResponse {
+pub struct LaunchToolResponse {
     #[prost(string, tag = "1")]
     pub handler_id: ::prost::alloc::string::String,
 }
@@ -355,50 +358,8 @@ pub struct MonitorStatusRequest {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MonitorStatusResponse {
-    #[prost(enumeration = "monitor_status_response::Phase", tag = "1")]
-    pub phase: i32,
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<ToolStatus>,
-}
-/// Nested message and enum types in `MonitorStatusResponse`.
-pub mod monitor_status_response {
-    /// monitoring has two Phases, running and completed
-    #[derive(
-        Clone,
-        Copy,
-        Debug,
-        PartialEq,
-        Eq,
-        Hash,
-        PartialOrd,
-        Ord,
-        ::prost::Enumeration
-    )]
-    #[repr(i32)]
-    pub enum Phase {
-        Running = 0,
-        Completed = 1,
-    }
-    impl Phase {
-        /// String value of the enum field names used in the ProtoBuf definition.
-        ///
-        /// The values are not transformed in any way and thus are considered stable
-        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-        pub fn as_str_name(&self) -> &'static str {
-            match self {
-                Self::Running => "RUNNING",
-                Self::Completed => "COMPLETED",
-            }
-        }
-        /// Creates an enum from field names used in the ProtoBuf definition.
-        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-            match value {
-                "RUNNING" => Some(Self::Running),
-                "COMPLETED" => Some(Self::Completed),
-                _ => None,
-            }
-        }
-    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStatusRequest {
@@ -1423,10 +1384,13 @@ pub mod dataplayer_service_client {
             self
         }
         /// launch the tool
-        pub async fn launch(
+        pub async fn launch_tool(
             &mut self,
-            request: impl tonic::IntoRequest<super::LaunchRequest>,
-        ) -> std::result::Result<tonic::Response<super::LaunchResponse>, tonic::Status> {
+            request: impl tonic::IntoRequest<super::LaunchToolRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchToolResponse>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1437,11 +1401,13 @@ pub mod dataplayer_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/req_packager.v1.DataplayerService/Launch",
+                "/req_packager.v1.DataplayerService/LaunchTool",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("req_packager.v1.DataplayerService", "Launch"));
+                .insert(
+                    GrpcMethod::new("req_packager.v1.DataplayerService", "LaunchTool"),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// find all instance of a user, kv table search, in-memory if empharpha or using sqlite to FS if persistence needed.
@@ -1588,10 +1554,13 @@ pub mod dataplayer_service_server {
     #[async_trait]
     pub trait DataplayerService: std::marker::Send + std::marker::Sync + 'static {
         /// launch the tool
-        async fn launch(
+        async fn launch_tool(
             &self,
-            request: tonic::Request<super::LaunchRequest>,
-        ) -> std::result::Result<tonic::Response<super::LaunchResponse>, tonic::Status>;
+            request: tonic::Request<super::LaunchToolRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchToolResponse>,
+            tonic::Status,
+        >;
         /// find all instance of a user, kv table search, in-memory if empharpha or using sqlite to FS if persistence needed.
         async fn query(
             &self,
@@ -1713,25 +1682,25 @@ pub mod dataplayer_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/req_packager.v1.DataplayerService/Launch" => {
+                "/req_packager.v1.DataplayerService/LaunchTool" => {
                     #[allow(non_camel_case_types)]
-                    struct LaunchSvc<T: DataplayerService>(pub Arc<T>);
+                    struct LaunchToolSvc<T: DataplayerService>(pub Arc<T>);
                     impl<
                         T: DataplayerService,
-                    > tonic::server::UnaryService<super::LaunchRequest>
-                    for LaunchSvc<T> {
-                        type Response = super::LaunchResponse;
+                    > tonic::server::UnaryService<super::LaunchToolRequest>
+                    for LaunchToolSvc<T> {
+                        type Response = super::LaunchToolResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::LaunchRequest>,
+                            request: tonic::Request<super::LaunchToolRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as DataplayerService>::launch(&inner, request).await
+                                <T as DataplayerService>::launch_tool(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1742,7 +1711,7 @@ pub mod dataplayer_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = LaunchSvc(inner);
+                        let method = LaunchToolSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

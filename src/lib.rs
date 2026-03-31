@@ -19,6 +19,7 @@ use grpc::{
 use prost_types::Timestamp;
 use serde::Deserialize;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -36,7 +37,7 @@ use crate::grpc::{
     tool_service_server::ToolService, tool_status, BrowseDatasetByUrlRequest, BrowseToolsRequest,
     BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, FindToolsRequest,
     FindToolsResponse, GetArtifactRequest, GetArtifactResponse, GetStatusRequest,
-    GetStatusResponse, GetToolRequest, HostedTool, LaunchRequest, LaunchResponse,
+    GetStatusResponse, GetToolRequest, HostedTool, LaunchToolRequest, LaunchToolResponse,
     MonitorStatusRequest, MonitorStatusResponse, QueryUserRequest, QueryUserResponse, ToolHandler,
     ToolMeta, ToolResponse,
 };
@@ -621,6 +622,7 @@ pub trait ToolSource: Send + Sync + 'static {
     //     id: &str,
     // ) -> anyhow::Result<BoxStream<'static, FileEntry>>;
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
+    async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta>;
 }
 
 pub struct ToolDatabase {
@@ -712,7 +714,7 @@ pub trait Dispatcher: Send + Sync + 'static {
         &self,
         uid: &str,
         tool: &ToolMeta,
-        files: &[FileEntry],
+        files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<String>;
     async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact>;
     /// get status of a tool from its handler id.
@@ -795,22 +797,24 @@ pub fn create_token() -> String {
 impl DataplayerService for Dataplayer {
     type MonitorStatusStream = ReceiverStream<Result<MonitorStatusResponse, Status>>;
 
-    async fn launch(
+    async fn launch_tool(
         &self,
-        req: Request<LaunchRequest>,
-    ) -> Result<Response<LaunchResponse>, Status> {
+        req: Request<LaunchToolRequest>,
+    ) -> Result<Response<LaunchToolResponse>, Status> {
         let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
-        let tool_meta = &req.tool.clone().unwrap(); // FIXME: DONTPANIC
-        let files_meta = &req.files;
+        let id = &req.tool_id.clone(); // FIXME: DONTPANIC
+        let slots_mapping = &req.slots_mapping;
+
+        let tool_meta = self.tool_source.get_tool(id).await.unwrap();
 
         let id = self
             .dispatcher
-            .launch(&user, tool_meta, files_meta)
+            .launch(&user, &tool_meta, slots_mapping)
             .await
             .unwrap();
 
-        Ok(Response::new(LaunchResponse { handler_id: id }))
+        Ok(Response::new(LaunchToolResponse { handler_id: id }))
     }
 
     async fn query(
@@ -872,7 +876,17 @@ impl DataplayerService for Dataplayer {
         &self,
         req: Request<MonitorStatusRequest>,
     ) -> Result<Response<Self::MonitorStatusStream>, Status> {
-        todo!()
+        let (tx, rx) = mpsc::channel(16);
+
+        tokio::spawn(async move {
+            tx.send(Ok(MonitorStatusResponse {
+                status: Some(ToolStatus::Ready.into()),
+            }))
+            .await
+            .ok();
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     async fn drop(&self, req: Request<DropRequest>) -> Result<Response<DropResponse>, Status> {

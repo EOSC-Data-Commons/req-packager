@@ -174,6 +174,9 @@ impl ToolSource for MockToolSrc {
         };
         Ok(tools)
     }
+    async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
+        Ok(self.tools[0].clone())
+    }
 }
 
 struct MockDispatcher {
@@ -199,7 +202,7 @@ impl Dispatcher for MockDispatcher {
         &self,
         uid: &str,
         tool: &ToolMeta,
-        files: &[grpc::FileEntry],
+        files: &HashMap<String, grpc::FileEntry>,
     ) -> anyhow::Result<String> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
