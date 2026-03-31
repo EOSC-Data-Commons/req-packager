@@ -1,5 +1,14 @@
 use async_stream::stream;
+use datahugger::{
+    crawl,
+    crawler::{CrawlerError, ProgressManager},
+    resolve, resolve_doi_to_url, Entry, FileMeta,
+};
+use exn::Exn;
+use futures::TryStreamExt;
 use futures_core::stream::BoxStream;
+use futures_util::StreamExt;
+use indicatif::ProgressBar;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
@@ -15,6 +24,7 @@ use req_packager::{
 };
 
 use chrono::{DateTime, Duration, Utc};
+use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -33,13 +43,11 @@ struct Dataset {
     files: Vec<FileEntry>,
 }
 
-struct MockDataSource {
-    // the key is a tuple, where 1st element is for datarepo url and the second is the id of the
-    // dataset in the datarepo.
+struct DatahuggerDataSource {
     datasets: HashMap<String, Dataset>,
 }
 
-impl MockDataSource {
+impl DatahuggerDataSource {
     fn new(datasets: Vec<Dataset>) -> Self {
         let datasets: HashMap<String, Dataset> = datasets
             .into_iter()
@@ -49,44 +57,97 @@ impl MockDataSource {
                 (uuid.to_string(), ds)
             })
             .collect();
-        MockDataSource { datasets }
+        DatahuggerDataSource { datasets }
+    }
+}
+
+trait CrawlFileExt {
+    fn crawl_file(
+        self,
+        client: &Client,
+        mp: impl ProgressManager,
+    ) -> BoxStream<'static, Result<grpc::FileEntry, Exn<CrawlerError>>>;
+}
+
+impl CrawlFileExt for datahugger::Dataset {
+    fn crawl_file(
+        self,
+        client: &Client,
+        mp: impl ProgressManager,
+    ) -> BoxStream<'static, Result<grpc::FileEntry, Exn<CrawlerError>>> {
+        let root_dir = self.root_dir();
+        crawl(
+            client.clone(),
+            Arc::clone(&self.backend),
+            root_dir,
+            mp.clone(),
+        )
+        .filter_map(|res| async move {
+            match res {
+                Ok(Entry::Dir(_)) => None,
+                Ok(Entry::File(f)) => {
+                    let f: FileEntry = f.into();
+                    let f: grpc::FileEntry = f.into();
+                    Some(Ok(f))
+                }
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .boxed()
+    }
+}
+
+#[derive(Clone)]
+struct NoProgress;
+
+impl ProgressManager for NoProgress {
+    fn insert(&self, _index: usize, _pb: ProgressBar) -> ProgressBar {
+        ProgressBar::hidden()
+    }
+
+    fn insert_from_back(&self, _index: usize, _pb: ProgressBar) -> ProgressBar {
+        ProgressBar::hidden()
     }
 }
 
 #[async_trait::async_trait]
-impl DataSource for MockDataSource {
+impl DataSource for DatahuggerDataSource {
     async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<grpc::DatasetInfo> {
-        // XXX: very fragile to use url+id, should be a PID or other primary key in DB.
-        match self.datasets.get(uuid) {
-            Some(dataset) => {
-                let info = dataset.info.clone();
-                Ok(info.into())
-            }
-            _ => {
-                anyhow::bail!("didn't find the dataset with {:?}", uuid)
-            }
-        }
+        let url = uuid;
+        let info = grpc::DatasetInfo {
+            url_datarepo: url.to_string(),
+            id_dataset: "dummy".to_string(),
+            description: "datahugger not yet support dataset metadata harvesting".to_string(),
+            total_files: None,
+            total_size_bytes: None,
+            created_at: None,
+            updated_at: None,
+            tags: HashMap::new(),
+        };
+        Ok(info)
     }
 
     async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
-        match self.datasets.get(uuid) {
-            Some(dataset) => {
-                let files = dataset
-                    .files
-                    .iter()
-                    .map(|f| f.clone().into())
-                    .collect::<Vec<grpc::FileEntry>>();
-                let stream = Box::pin(stream! {
-                    for file in files {
-                        yield file;
-                    }
-                });
-                Ok(stream)
-            }
-            _ => {
-                anyhow::bail!("didn't find the dataset with {:?}", uuid)
-            }
+        let user_agent = format!(
+            "datahugger-over-eosc-coordinator/{}",
+            env!("CARGO_PKG_VERSION")
+        );
+        let client = ClientBuilder::new().user_agent(user_agent).build()?;
+        let mut url = uuid.to_string();
+        if url.starts_with("https://doi.org/") {
+            let doi = url.trim_start_matches("https://doi.org/");
+            url = resolve_doi_to_url(&client, doi, true)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         }
+        let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let mp = NoProgress;
+        let files = ds
+            .crawl_file(&client, mp)
+            // TODO: I need log on error cases on the server.
+            .filter_map(|f| async move { f.ok() })
+            .boxed();
+        Ok(files)
     }
 }
 
@@ -258,6 +319,23 @@ struct FileEntry {
     modified_at: DateTime<Utc>,
 }
 
+impl From<FileMeta> for FileEntry {
+    fn from(meta: FileMeta) -> Self {
+        FileEntry {
+            download_url: Some(meta.download_url().to_string()),
+            path: meta.path().to_string(),
+            // XXX: for some dataset, this can be a folder
+            is_dir: false,
+            // XXX: how to deal the case when size is unknown from datahugger?
+            size_bytes: meta.size().unwrap_or(0),
+            mime_type: meta.mimetype().map(|m| format!("{m}")),
+            checksum: None,
+            // XXX: modified time??
+            modified_at: DateTime::from_timestamp_nanos(323),
+        }
+    }
+}
+
 impl From<FileEntry> for grpc::FileEntry {
     fn from(f: FileEntry) -> Self {
         let modified_at = Timestamp {
@@ -404,6 +482,10 @@ fn generate_tools() -> Vec<ToolMeta> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("info") // filter logs by level
+        .init();
+
     let addr = "[::1]:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and based on their are less updated, query is faster
@@ -411,7 +493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // con: the packager need to be initialized, how freq it happens to take latest list?
     //
     let datasets = generate_datasets();
-    let data_src = Arc::new(MockDataSource::new(datasets));
+    let data_src = Arc::new(DatahuggerDataSource::new(datasets));
     let data_relayer = DataRelayer::new(data_src);
 
     let tools = generate_tools();
