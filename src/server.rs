@@ -3,15 +3,9 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    grpc::{
-        self,
-        dataplayer_service_server::DataplayerServiceServer,
-        dataset_service_server::DatasetServiceServer,
-        tool_service_server::{ToolService, ToolServiceServer},
-        tool_status, ToolHandler, ToolMeta, UserId,
-    },
-    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, InfoRequest,
-    LaunchRequset, ToolDatabase, ToolRegistryClient, ToolSource, ToolStatus,
+    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, grpc::{
+        self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
+    }
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -119,17 +113,13 @@ impl ToolSource for MockToolSrc {
 }
 
 struct MockDispatcher {
-    // to get the handler and light meta data
-    db_1: RwLock<HashMap<Uuid, ToolHandler>>,
-    // to get the heavy Artifact, that is updated once per record
-    db_2: RwLock<HashMap<Uuid, Artifact>>,
+    db: RwLock<HashMap<Uuid, TaskHandler>>,
 }
 
 impl MockDispatcher {
     fn new() -> Self {
         Self {
-            db_1: RwLock::new(HashMap::new()),
-            db_2: RwLock::new(HashMap::new()),
+            db: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -142,7 +132,7 @@ impl Dispatcher for MockDispatcher {
         uid: &str,
         tool: &ToolMeta,
         files: &HashMap<String, grpc::FileEntry>,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
         // mapping for what eosc user can access which vres. Should this all kept in an auth server
@@ -156,58 +146,45 @@ impl Dispatcher for MockDispatcher {
         // should tool meta contain all info to let dispatcher know "how to launch a tool?"
 
         let id = uuid::Uuid::new_v4();
-        let th = ToolHandler {
-            state: Some(grpc::ToolStatus {
-                log: "".to_string(),
-                state: tool_status::State::Ready.into(),
-            }),
-            owner: Some(UserId {
-                inner: uid.to_string(),
-            }),
-            id: id.to_string(),
-        };
-
-        let mut db = self.db_1.write().await;
-        db.entry(id).or_insert(th.clone());
-        // mock: this example is the lightweight tool that immediately ready, so the artifact is
-        // ready immediately.
-
-        let mut db = self.db_2.write().await;
-        let art = Artifact::EoscInlineTool {
+        let artifact = Artifact::EoscInlineTool {
             callback: Url::from_str("https://example.com/launch").unwrap(),
         };
-        db.entry(id).or_insert(art.clone());
+        // TODO: use TaskHandler::new()
+        let task_handler = TaskHandler {
+            id: HandlerId(id),
+            user_id: UserId(uid.to_string()),
+            state: ToolState::Ready,
+            artifact,
+        };
 
-        Ok(th.id)
+        let mut db = self.db.write().await;
+        db.entry(id).or_insert(task_handler);
+
+        Ok(id)
     }
 
-    async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact> {
-        let db = self.db_2.read().await;
-        let hd = db.get(&Uuid::from_str(handler_id).unwrap()).unwrap();
-        Ok(hd.clone())
+    async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact> {
+        let db = self.db.read().await;
+        let hd = db.get(handler_id).unwrap();
+        let artifact = hd.artifact.clone();
+        Ok(artifact)
     }
 
-    async fn query_tools(&self, uid: &str) -> anyhow::Result<Vec<ToolHandler>> {
-        let db = self.db_1.read().await;
+    async fn query_tasks(&self, uid: &str) -> anyhow::Result<Vec<TaskHandler>> {
+        let db = self.db.read().await;
         let out = db
-            .iter()
-            .filter_map(|(_uuid, th)| {
-                let owner_id = th.clone().owner.unwrap();
-                if uid == owner_id.inner {
-                    Some(th.to_owned())
-                } else {
-                    None
-                }
-            })
+            .values()
+            .filter(|th| th.user_id.0 == uid)
+            .cloned()
             .collect::<Vec<_>>();
         Ok(out)
     }
 
-    async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus> {
-        let db = self.db_1.read().await;
-        let hd = db.get(&Uuid::from_str(handler_id).unwrap()).unwrap();
-        let status = hd.state.as_ref().unwrap();
-        Ok(status.clone().into())
+    async fn get_state(&self, task_uuid: &Uuid) -> anyhow::Result<ToolState> {
+        let db = self.db.read().await;
+        let hd = db.get(task_uuid).unwrap();
+        let status = hd.state.clone();
+        Ok(status.clone())
     }
 }
 
@@ -398,6 +375,9 @@ fn generate_tools() -> Vec<ToolMeta> {
         .map(|i| ToolMeta {
             id: format!("{i}"),
             version: "0.1.0alpha".to_string(),
+            name: "".to_uppercase(),
+            description: "".to_uppercase(),
+            slots: vec![],
         })
         .collect()
 }

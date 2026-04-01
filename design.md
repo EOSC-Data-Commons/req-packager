@@ -359,6 +359,26 @@ placeholder, basic ideas,
 - the documentation with lots of complete examples are essential for such helper DSL.
 - the description do not need to specify and separates client and server, it is automatically have locallized field validation on client and cross-fields validation on server.
 
+### RFC 006: data flow with the UI
+
+UI frontend `pages/FooPage.tsx` -\- `lib/coordinatorApi.ts` (implement wrapper of request call of `/api/bar...`)  
+
+<----> 
+
+UI server `server.ts` -\- `lib/server/grpcClient.ts` (grpc client run on the UI server talk to grpc server deployed by req-packager).
+
+<--HTTP/2--> 
+
+coordinator server run as a binary (as grpc server) which hide the backend services from UI.
+
+### RFC 007: grpc type only stay on the communication surface
+
+This RFC is a style pedantic requirement.
+I enforce the grpc type generated from protobuf stay on the communication channel surface only.
+On the server side there is always a logic type that can converted to the autogen message type.
+
+For some struct such as `UserId` this seems a bit redundant, but for struct such as `TaskHandler` which can have more complex struct on the logic side because it requires to talk to the persistent system while the message type is simpler.
+
 ## Components (functional requirements)
 
 ### Component 001

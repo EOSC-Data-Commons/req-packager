@@ -150,16 +150,23 @@ message BrowseComplete {
 
 // -------------- Start of Tool Service --------------
 // this is what response to client about the vre entity it can utilize.
+// NOTE: @reggie here is what supposed to be stored in the registry.
 message ToolMeta {
   // id in the tool registry
   string id = 1;
   string version = 2;
+  string name = 3;
+  string description = 4;
+  repeated string slots = 5;
 }
 
 message BrowseToolsRequest {}
 message BrowseToolsResponse {}
 
-message GetToolRequest {}
+message GetToolRequest {
+  string id = 1;
+}
+
 message ToolResponse {
   ToolMeta tool = 1;
 }
@@ -191,7 +198,7 @@ service ToolService {
 
 // the lightweight tool do not need resources can be always ready. 
 // the tool that need resource preparing, start frond preparing, and end with the resource being dropped
-message ToolStatus {
+message ToolState {
   enum State {
     PREPARING = 0;
     reserved 1, 2, 3, 4;
@@ -212,33 +219,37 @@ message LaunchToolRequest {
   map<string, FileEntry> slots_mapping = 2;
 }
 
-message User_Id {
+message UserId {
   string inner = 1;
 }
 
-message ToolHandler {
-  ToolStatus state = 1;
-  User_Id owner = 2;
-  string id = 3;
+message HandlerId {
+  string inner = 1;
+}
+
+message ToolTaskHandler {
+  HandlerId id = 1;
+  ToolState state = 2;
+  UserId owner = 3;
 }
 
 message LaunchToolResponse {
   string handler_id = 1;
 }
 
-message MonitorStatusRequest {
+message MonitorStateRequest {
   string id = 1;
 }
 
-message MonitorStatusResponse {
-  ToolStatus status = 1;
+message MonitorStateResponse {
+  ToolState status = 1;
 }
 
-message GetStatusRequest {
-  string id = 1;
+message GetStateRequest {
+  string task_uuid = 1;
 }
-message GetStatusResponse {
-  ToolStatus status = 1;
+message GetStateResponse {
+  ToolState status = 1;
 }
 
 
@@ -250,10 +261,10 @@ message DropResponse {
 }
 
 message QueryUserRequest {
-  User_Id user_id = 1;
+  UserId user_id = 1;
 }
 message QueryUserResponse {
-  repeated ToolHandler ths = 1;
+  repeated ToolTaskHandler ths = 1;
 }
 
 message GetArtifactRequest {
@@ -291,9 +302,9 @@ service DataplayerService {
   rpc GetArtifact(GetArtifactRequest) returns (GetArtifactResponse);
 
   // monitoring the status of one running session
-  rpc MonitorStatus(MonitorStatusRequest) returns (stream MonitorStatusResponse);
+  rpc MonitorState(MonitorStateRequest) returns (stream MonitorStateResponse);
 
-  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc GetState(GetStateRequest) returns (GetStateResponse);
 
   // ??? who should drop? vre call drop or from edc system call drop?
   // Is the use case always after the control move to vre, it never goes back to eosc?

@@ -237,6 +237,7 @@ pub struct BrowseComplete {
 }
 /// -------------- Start of Tool Service --------------
 /// this is what response to client about the vre entity it can utilize.
+/// NOTE: @reggie here is what supposed to be stored in the registry.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ToolMeta {
     /// id in the tool registry
@@ -244,13 +245,22 @@ pub struct ToolMeta {
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub version: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub description: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "5")]
+    pub slots: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrowseToolsRequest {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrowseToolsResponse {}
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetToolRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetToolRequest {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ToolResponse {
     #[prost(message, optional, tag = "1")]
@@ -270,14 +280,14 @@ pub struct FindToolsResponse {
 /// the lightweight tool do not need resources can be always ready.
 /// the tool that need resource preparing, start frond preparing, and end with the resource being dropped
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ToolStatus {
+pub struct ToolState {
     #[prost(string, tag = "1")]
     pub log: ::prost::alloc::string::String,
-    #[prost(enumeration = "tool_status::State", tag = "2")]
+    #[prost(enumeration = "tool_state::State", tag = "2")]
     pub state: i32,
 }
-/// Nested message and enum types in `ToolStatus`.
-pub mod tool_status {
+/// Nested message and enum types in `ToolState`.
+pub mod tool_state {
     #[derive(
         Clone,
         Copy,
@@ -338,13 +348,18 @@ pub struct UserId {
     pub inner: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ToolHandler {
+pub struct HandlerId {
+    #[prost(string, tag = "1")]
+    pub inner: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ToolTaskHandler {
     #[prost(message, optional, tag = "1")]
-    pub state: ::core::option::Option<ToolStatus>,
+    pub id: ::core::option::Option<HandlerId>,
     #[prost(message, optional, tag = "2")]
+    pub state: ::core::option::Option<ToolState>,
+    #[prost(message, optional, tag = "3")]
     pub owner: ::core::option::Option<UserId>,
-    #[prost(string, tag = "3")]
-    pub id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchToolResponse {
@@ -352,24 +367,24 @@ pub struct LaunchToolResponse {
     pub handler_id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MonitorStatusRequest {
+pub struct MonitorStateRequest {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MonitorStatusResponse {
+pub struct MonitorStateResponse {
     #[prost(message, optional, tag = "1")]
-    pub status: ::core::option::Option<ToolStatus>,
+    pub status: ::core::option::Option<ToolState>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetStatusRequest {
+pub struct GetStateRequest {
     #[prost(string, tag = "1")]
-    pub id: ::prost::alloc::string::String,
+    pub task_uuid: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetStatusResponse {
+pub struct GetStateResponse {
     #[prost(message, optional, tag = "1")]
-    pub status: ::core::option::Option<ToolStatus>,
+    pub status: ::core::option::Option<ToolState>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DropRequest {
@@ -389,7 +404,7 @@ pub struct QueryUserRequest {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QueryUserResponse {
     #[prost(message, repeated, tag = "1")]
-    pub ths: ::prost::alloc::vec::Vec<ToolHandler>,
+    pub ths: ::prost::alloc::vec::Vec<ToolTaskHandler>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetArtifactRequest {
@@ -1463,11 +1478,11 @@ pub mod dataplayer_service_client {
             self.inner.unary(req, path, codec).await
         }
         /// monitoring the status of one running session
-        pub async fn monitor_status(
+        pub async fn monitor_state(
             &mut self,
-            request: impl tonic::IntoRequest<super::MonitorStatusRequest>,
+            request: impl tonic::IntoRequest<super::MonitorStateRequest>,
         ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::MonitorStatusResponse>>,
+            tonic::Response<tonic::codec::Streaming<super::MonitorStateResponse>>,
             tonic::Status,
         > {
             self.inner
@@ -1480,20 +1495,20 @@ pub mod dataplayer_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coordinator.v1.DataplayerService/MonitorStatus",
+                "/coordinator.v1.DataplayerService/MonitorState",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new("coordinator.v1.DataplayerService", "MonitorStatus"),
+                    GrpcMethod::new("coordinator.v1.DataplayerService", "MonitorState"),
                 );
             self.inner.server_streaming(req, path, codec).await
         }
-        pub async fn get_status(
+        pub async fn get_state(
             &mut self,
-            request: impl tonic::IntoRequest<super::GetStatusRequest>,
+            request: impl tonic::IntoRequest<super::GetStateRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetStatusResponse>,
+            tonic::Response<super::GetStateResponse>,
             tonic::Status,
         > {
             self.inner
@@ -1506,13 +1521,11 @@ pub mod dataplayer_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coordinator.v1.DataplayerService/GetStatus",
+                "/coordinator.v1.DataplayerService/GetState",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("coordinator.v1.DataplayerService", "GetStatus"),
-                );
+                .insert(GrpcMethod::new("coordinator.v1.DataplayerService", "GetState"));
             self.inner.unary(req, path, codec).await
         }
         /// ??? who should drop? vre call drop or from edc system call drop?
@@ -1577,25 +1590,25 @@ pub mod dataplayer_service_server {
             tonic::Response<super::GetArtifactResponse>,
             tonic::Status,
         >;
-        /// Server streaming response type for the MonitorStatus method.
-        type MonitorStatusStream: tonic::codegen::tokio_stream::Stream<
-                Item = std::result::Result<super::MonitorStatusResponse, tonic::Status>,
+        /// Server streaming response type for the MonitorState method.
+        type MonitorStateStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::MonitorStateResponse, tonic::Status>,
             >
             + std::marker::Send
             + 'static;
         /// monitoring the status of one running session
-        async fn monitor_status(
+        async fn monitor_state(
             &self,
-            request: tonic::Request<super::MonitorStatusRequest>,
+            request: tonic::Request<super::MonitorStateRequest>,
         ) -> std::result::Result<
-            tonic::Response<Self::MonitorStatusStream>,
+            tonic::Response<Self::MonitorStateStream>,
             tonic::Status,
         >;
-        async fn get_status(
+        async fn get_state(
             &self,
-            request: tonic::Request<super::GetStatusRequest>,
+            request: tonic::Request<super::GetStateRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::GetStatusResponse>,
+            tonic::Response<super::GetStateResponse>,
             tonic::Status,
         >;
         /// ??? who should drop? vre call drop or from edc system call drop?
@@ -1818,26 +1831,26 @@ pub mod dataplayer_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/coordinator.v1.DataplayerService/MonitorStatus" => {
+                "/coordinator.v1.DataplayerService/MonitorState" => {
                     #[allow(non_camel_case_types)]
-                    struct MonitorStatusSvc<T: DataplayerService>(pub Arc<T>);
+                    struct MonitorStateSvc<T: DataplayerService>(pub Arc<T>);
                     impl<
                         T: DataplayerService,
-                    > tonic::server::ServerStreamingService<super::MonitorStatusRequest>
-                    for MonitorStatusSvc<T> {
-                        type Response = super::MonitorStatusResponse;
-                        type ResponseStream = T::MonitorStatusStream;
+                    > tonic::server::ServerStreamingService<super::MonitorStateRequest>
+                    for MonitorStateSvc<T> {
+                        type Response = super::MonitorStateResponse;
+                        type ResponseStream = T::MonitorStateStream;
                         type Future = BoxFuture<
                             tonic::Response<Self::ResponseStream>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::MonitorStatusRequest>,
+                            request: tonic::Request<super::MonitorStateRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as DataplayerService>::monitor_status(&inner, request)
+                                <T as DataplayerService>::monitor_state(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -1849,7 +1862,7 @@ pub mod dataplayer_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = MonitorStatusSvc(inner);
+                        let method = MonitorStateSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -1865,25 +1878,25 @@ pub mod dataplayer_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/coordinator.v1.DataplayerService/GetStatus" => {
+                "/coordinator.v1.DataplayerService/GetState" => {
                     #[allow(non_camel_case_types)]
-                    struct GetStatusSvc<T: DataplayerService>(pub Arc<T>);
+                    struct GetStateSvc<T: DataplayerService>(pub Arc<T>);
                     impl<
                         T: DataplayerService,
-                    > tonic::server::UnaryService<super::GetStatusRequest>
-                    for GetStatusSvc<T> {
-                        type Response = super::GetStatusResponse;
+                    > tonic::server::UnaryService<super::GetStateRequest>
+                    for GetStateSvc<T> {
+                        type Response = super::GetStateResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::GetStatusRequest>,
+                            request: tonic::Request<super::GetStateRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as DataplayerService>::get_status(&inner, request).await
+                                <T as DataplayerService>::get_state(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1894,7 +1907,7 @@ pub mod dataplayer_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = GetStatusSvc(inner);
+                        let method = GetStateSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -21,6 +21,7 @@ use serde::Deserialize;
 use std::{
     collections::HashMap,
     path::PathBuf,
+    str::FromStr,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -31,15 +32,15 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use url::Url;
+use uuid::Uuid;
 
 use crate::grpc::{
     dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
-    tool_service_server::ToolService, tool_status, BrowseDatasetByUrlRequest, BrowseToolsRequest,
+    tool_service_server::ToolService, tool_state, BrowseDatasetByUrlRequest, BrowseToolsRequest,
     BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, FindToolsRequest,
-    FindToolsResponse, GetArtifactRequest, GetArtifactResponse, GetStatusRequest,
-    GetStatusResponse, GetToolRequest, HostedTool, LaunchToolRequest, LaunchToolResponse,
-    MonitorStatusRequest, MonitorStatusResponse, QueryUserRequest, QueryUserResponse, ToolHandler,
-    ToolMeta, ToolResponse,
+    FindToolsResponse, GetArtifactRequest, GetArtifactResponse, GetStateRequest, GetStateResponse,
+    GetToolRequest, HostedTool, LaunchToolRequest, LaunchToolResponse, MonitorStateRequest,
+    MonitorStateResponse, QueryUserRequest, QueryUserResponse, ToolResponse, ToolTaskHandler,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -101,8 +102,7 @@ impl DatasetService for DataRelayer {
         &self,
         request: Request<BrowseDatasetByUrlRequest>,
     ) -> Result<Response<Self::BrowseDatasetByUrlStream>, Status> {
-        // TODO: tracing
-        println!("Got a request: {request:?}");
+        tracing::info!("Got a request to browser dataset: {request:?}");
         let (tx, rx) = mpsc::channel(16);
         let data_source = Arc::clone(&self.data_source);
 
@@ -286,7 +286,7 @@ impl DatasetService for DataRelayer {
         request: Request<BrowseDatasetRequest>,
     ) -> Result<Response<Self::BrowseDatasetStream>, Status> {
         // TODO: tracing
-        println!("Got a request: {request:?}");
+        tracing::info!("Got a request to browser dataset: {request:?}");
         let (tx, rx) = mpsc::channel(16);
         let data_source = Arc::clone(&self.data_source);
 
@@ -639,13 +639,24 @@ impl ToolService for ToolDatabase {
         &self,
         request: Request<GetToolRequest>,
     ) -> Result<Response<ToolResponse>, Status> {
-        todo!()
+        let req = request.get_ref();
+        let tool = self
+            .tool_source
+            .get_tool(&req.id)
+            .await
+            // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
+            // retry or report mechenism.
+            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+        Ok(Response::new(ToolResponse {
+            tool: Some(tool.into()),
+        }))
     }
 
     async fn find_tools(
         &self,
         req: Request<FindToolsRequest>,
     ) -> Result<Response<FindToolsResponse>, Status> {
+        tracing::info!("Got a request to query tools: {req:?}");
         let req = req.get_ref();
 
         let tools = self
@@ -655,9 +666,14 @@ impl ToolService for ToolDatabase {
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
             .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+        let tools = tools
+            .into_iter()
+            .map(|t| t.into())
+            .collect::<Vec<grpc::ToolMeta>>();
         Ok(Response::new(FindToolsResponse { tools }))
     }
 
+    // TODO: not very useful? if so deprecate it.
     async fn browse_tools(
         &self,
         request: Request<BrowseToolsRequest>,
@@ -666,37 +682,97 @@ impl ToolService for ToolDatabase {
     }
 }
 
-pub enum ToolStatus {
+#[derive(Debug, Clone)]
+pub enum ToolState {
     Preparing,
     Ready,
     Dropped,
 }
 
-impl From<ToolStatus> for grpc::ToolStatus {
-    fn from(status: ToolStatus) -> Self {
+impl From<ToolState> for grpc::ToolState {
+    fn from(status: ToolState) -> Self {
         match status {
-            ToolStatus::Ready => grpc::ToolStatus {
+            ToolState::Ready => grpc::ToolState {
                 log: "ready".to_string(),
-                state: tool_status::State::Ready.into(),
+                state: tool_state::State::Ready.into(),
             },
-            ToolStatus::Preparing => grpc::ToolStatus {
+            ToolState::Preparing => grpc::ToolState {
                 log: "preparing".to_string(),
-                state: tool_status::State::Preparing.into(),
+                state: tool_state::State::Preparing.into(),
             },
-            ToolStatus::Dropped => grpc::ToolStatus {
+            ToolState::Dropped => grpc::ToolState {
                 log: "preparing".to_string(),
-                state: tool_status::State::Preparing.into(),
+                state: tool_state::State::Preparing.into(),
             },
         }
     }
 }
 
-impl From<grpc::ToolStatus> for ToolStatus {
-    fn from(status: grpc::ToolStatus) -> Self {
+impl From<grpc::ToolState> for ToolState {
+    fn from(status: grpc::ToolState) -> Self {
         match status.state() {
-            tool_status::State::Preparing => ToolStatus::Preparing,
-            tool_status::State::Ready => ToolStatus::Ready,
-            tool_status::State::Dropped => ToolStatus::Dropped,
+            tool_state::State::Preparing => ToolState::Preparing,
+            tool_state::State::Ready => ToolState::Ready,
+            tool_state::State::Dropped => ToolState::Dropped,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolMeta {
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    pub description: String,
+    pub slots: Vec<String>,
+}
+
+impl From<ToolMeta> for grpc::ToolMeta {
+    fn from(value: ToolMeta) -> Self {
+        grpc::ToolMeta {
+            id: value.id,
+            version: value.version,
+            name: value.name,
+            description: value.description,
+            slots: value.slots,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserId(pub String);
+
+impl From<UserId> for grpc::UserId {
+    fn from(value: UserId) -> Self {
+        grpc::UserId { inner: value.0 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskHandler {
+    pub id: HandlerId,
+    pub user_id: UserId,
+    pub state: ToolState,
+    pub artifact: Artifact,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandlerId(pub Uuid);
+
+impl From<HandlerId> for grpc::HandlerId {
+    fn from(value: HandlerId) -> Self {
+        grpc::HandlerId {
+            inner: value.0.to_string(),
+        }
+    }
+}
+
+impl From<TaskHandler> for ToolTaskHandler {
+    fn from(value: TaskHandler) -> Self {
+        ToolTaskHandler {
+            id: Some(value.id.into()),
+            state: Some(value.state.into()),
+            owner: Some(value.user_id.into()),
         }
     }
 }
@@ -711,11 +787,11 @@ pub trait Dispatcher: Send + Sync + 'static {
         uid: &str,
         tool: &ToolMeta,
         files: &HashMap<String, FileEntry>,
-    ) -> anyhow::Result<String>;
-    async fn get_artifact(&self, handler_id: &str) -> anyhow::Result<Artifact>;
+    ) -> anyhow::Result<Uuid>;
+    async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact>;
     /// get status of a tool from its handler id.
-    async fn get_status(&self, handler_id: &str) -> anyhow::Result<ToolStatus>;
-    async fn query_tools(&self, uid: &str) -> anyhow::Result<Vec<ToolHandler>>;
+    async fn get_state(&self, handler_id: &Uuid) -> anyhow::Result<ToolState>;
+    async fn query_tasks(&self, uid: &str) -> anyhow::Result<Vec<TaskHandler>>;
 }
 
 // NOTE: the flexibility of this abstraction is that I can have the persistency in dispatcher
@@ -791,15 +867,16 @@ pub fn create_token() -> String {
 
 #[tonic::async_trait]
 impl DataplayerService for Dataplayer {
-    type MonitorStatusStream = ReceiverStream<Result<MonitorStatusResponse, Status>>;
+    type MonitorStateStream = ReceiverStream<Result<MonitorStateResponse, Status>>;
 
     async fn launch_tool(
         &self,
         req: Request<LaunchToolRequest>,
     ) -> Result<Response<LaunchToolResponse>, Status> {
+        tracing::info!("Got a request to launch tool: {req:?}");
         let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
-        let id = &req.tool_id.clone(); // FIXME: DONTPANIC
+        let id = &req.tool_id;
         let slots_mapping = &req.slots_mapping;
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
@@ -810,7 +887,9 @@ impl DataplayerService for Dataplayer {
             .await
             .unwrap();
 
-        Ok(Response::new(LaunchToolResponse { handler_id: id }))
+        Ok(Response::new(LaunchToolResponse {
+            handler_id: id.to_string(),
+        }))
     }
 
     async fn query(
@@ -818,7 +897,8 @@ impl DataplayerService for Dataplayer {
         req: Request<QueryUserRequest>,
     ) -> Result<Response<QueryUserResponse>, Status> {
         let user = get_user_from_token(&req).unwrap();
-        let tools = self.dispatcher.query_tools(&user).await.unwrap();
+        let tools = self.dispatcher.query_tasks(&user).await.unwrap();
+        let tools = tools.into_iter().map(|t| t.into()).collect::<Vec<_>>();
         Ok(Response::new(QueryUserResponse { ths: tools }))
     }
 
@@ -828,12 +908,13 @@ impl DataplayerService for Dataplayer {
     ) -> Result<Response<GetArtifactResponse>, Status> {
         let req = req.get_ref();
         let handler_id = &req.handler_id;
+        let handler_id = Uuid::from_str(handler_id).expect("handler_id is from launch call");
         // TODO: check the state of the tool is ready.
-        let status = self.dispatcher.get_status(handler_id).await.unwrap();
-        if !matches!(status, ToolStatus::Ready) {
+        let state = self.dispatcher.get_state(&handler_id).await.unwrap();
+        if !matches!(state, ToolState::Ready) {
             return Err(Status::internal("tool not ready"));
         }
-        let artifact = self.dispatcher.get_artifact(handler_id).await.unwrap();
+        let artifact = self.dispatcher.get_artifact(&handler_id).await.unwrap();
 
         let ep = match artifact {
             Artifact::HostedTool { callback } => {
@@ -855,28 +936,29 @@ impl DataplayerService for Dataplayer {
         }))
     }
 
-    async fn get_status(
+    async fn get_state(
         &self,
-        req: Request<GetStatusRequest>,
-    ) -> Result<Response<GetStatusResponse>, Status> {
+        req: Request<GetStateRequest>,
+    ) -> Result<Response<GetStateResponse>, Status> {
         let req = req.get_ref();
-        let handler_id = &req.id;
-        let tool_status = self.dispatcher.get_status(handler_id).await.unwrap();
+        let handler_id = &req.task_uuid;
+        let handler_id = Uuid::from_str(handler_id).expect("invalid task uuid");
+        let tool_state = self.dispatcher.get_state(&handler_id).await.unwrap();
 
-        Ok(Response::new(GetStatusResponse {
-            status: Some(tool_status.into()),
+        Ok(Response::new(GetStateResponse {
+            status: Some(tool_state.into()),
         }))
     }
 
-    async fn monitor_status(
+    async fn monitor_state(
         &self,
-        req: Request<MonitorStatusRequest>,
-    ) -> Result<Response<Self::MonitorStatusStream>, Status> {
+        req: Request<MonitorStateRequest>,
+    ) -> Result<Response<Self::MonitorStateStream>, Status> {
         let (tx, rx) = mpsc::channel(16);
 
         tokio::spawn(async move {
-            tx.send(Ok(MonitorStatusResponse {
-                status: Some(ToolStatus::Ready.into()),
+            tx.send(Ok(MonitorStateResponse {
+                status: Some(ToolState::Ready.into()),
             }))
             .await
             .ok();
