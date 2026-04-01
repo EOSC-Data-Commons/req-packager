@@ -22,6 +22,7 @@ use req_packager::{
     Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, InfoRequest,
     LaunchRequset, ToolDatabase, ToolRegistryClient, ToolSource, ToolStatus,
 };
+use tonic_health::server::HealthReporter;
 
 use chrono::{DateTime, Duration, Utc};
 use reqwest::{Client, ClientBuilder};
@@ -480,15 +481,37 @@ fn generate_tools() -> Vec<ToolMeta> {
         .collect()
 }
 
+async fn report_service_status(reporter: HealthReporter) {
+    // TODO: the real report should report all sub-services by making health check to the source
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        reporter
+            .set_serving::<DataplayerServiceServer<Dataplayer>>()
+            .await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (health_report, health_service) = tonic_health::server::health_reporter();
+    health_report
+        .set_serving::<DatasetServiceServer<Dataplayer>>()
+        .await;
+    health_report
+        .set_serving::<ToolServiceServer<ToolDatabase>>()
+        .await;
+    health_report
+        .set_serving::<DataplayerServiceServer<Dataplayer>>()
+        .await;
+    tokio::spawn(report_service_status(health_report.clone()));
+
     tracing_subscriber::fmt()
         .with_env_filter("info") // filter logs by level
         .init();
 
     let addr = "[::1]:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
-    // pro: tool/type-registry is more static and based on their are less updated, query is faster
+    // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
     // (however there is not too much query needed, just index visiting).
     // con: the packager need to be initialized, how freq it happens to take latest list?
     //
@@ -506,6 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_player = Dataplayer::new(dispatcher, tool_src_cloned);
 
     Server::builder()
+        .add_service(health_service)
         .add_service(DatasetServiceServer::new(data_relayer))
         .add_service(ToolServiceServer::new(tool_srv))
         .add_service(DataplayerServiceServer::new(data_player))
