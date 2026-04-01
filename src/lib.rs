@@ -106,6 +106,10 @@ impl DatasetService for DataRelayer {
         let (tx, rx) = mpsc::channel(16);
         let data_source = Arc::clone(&self.data_source);
 
+        // XXX: didn't take care of the cancellation when error raise. (do I keep on sending files
+        // on I abort and cancel the whole rpc call?) Is the database file metadata fetch give all
+        // files in one call, or it also give files one by one? (The DB might just give everything
+        // in one call, and the error is handled by DB itself.)
         tokio::spawn(async move {
             // INIT Phase
             let req = request.get_ref();
@@ -153,6 +157,8 @@ impl DatasetService for DataRelayer {
             .ok();
 
             // Browsing, keep on sending file info of the dataset asynchronously
+            // NOTE: here it assume list_files return a stream, this assumption comes from
+            // datahugger functionality. For DB might better use another mechanism.
             let files = match data_source.list_files(url).await {
                 Ok(files) => files,
                 Err(err) => {
@@ -229,6 +235,7 @@ impl DatasetService for DataRelayer {
                                 bytes_scanned: new_bytes,
                                 // FIXME: don't calculate percent in server side, because the
                                 // respond arrive in client side without orders.
+                                // let the client compute the progress.
                                 #[allow(clippy::cast_possible_truncation)]
                                 percent: ((new_files as f64
                                     / dataset_info.total_files() as f64) * 100.0) as u32,
@@ -610,17 +617,6 @@ pub struct RequestPackager {
 //
 #[async_trait::async_trait]
 pub trait ToolSource: Send + Sync + 'static {
-    // // get dataset information
-    // async fn get_dataset_info(&self, url_datarepo: &str, id: &str) -> anyhow::Result<DatasetInfo>;
-    //
-    // /// list files in the dataset
-    // /// # Errors
-    // /// ???
-    // fn list_files(
-    //     &self,
-    //     url_datarepo: &str,
-    //     id: &str,
-    // ) -> anyhow::Result<BoxStream<'static, FileEntry>>;
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta>;
 }
