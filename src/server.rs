@@ -3,7 +3,7 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, grpc::{
+    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, grpc::{
         self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
     }
 };
@@ -62,7 +62,7 @@ impl DataSource for MockDataSource {
         }
     }
 
-    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
+    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
         match self.datasets.get(uuid) {
             Some(dataset) => {
                 let files = dataset
@@ -72,7 +72,7 @@ impl DataSource for MockDataSource {
                     .collect::<Vec<grpc::FileEntry>>();
                 let stream = Box::pin(stream! {
                     for file in files {
-                        yield file;
+                        yield file.into();
                     }
                 });
                 Ok(stream)
@@ -96,7 +96,7 @@ impl MockToolSrc {
 
 #[async_trait::async_trait]
 impl ToolSource for MockToolSrc {
-    async fn find_tools(&self, files: &[grpc::FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
         // XXX: very dummy to guess tool by number of files, it needs to be the file mime-type,
         // even in PoC. smart a bit on n % 10.
         let tools = match files.len() {
@@ -131,7 +131,7 @@ impl Dispatcher for MockDispatcher {
         &self,
         uid: &str,
         tool: &ToolMeta,
-        files: &HashMap<String, grpc::FileEntry>,
+        files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -220,36 +220,6 @@ impl From<DatasetInfo> for grpc::DatasetInfo {
             created_at: Some(created_at),
             updated_at: Some(updated_at),
             tags: d.tags,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct FileEntry {
-    download_url: Option<String>,
-    path: String,
-    is_dir: bool,
-    size_bytes: u64,
-    mime_type: Option<String>,
-    checksum: Option<String>,
-    modified_at: DateTime<Utc>,
-}
-
-impl From<FileEntry> for grpc::FileEntry {
-    fn from(f: FileEntry) -> Self {
-        let modified_at = Timestamp {
-            seconds: f.modified_at.timestamp(),
-            nanos: 0,
-        };
-        grpc::FileEntry {
-            download_url: f.download_url,
-            path: f.path,
-            is_dir: f.is_dir,
-            size_bytes: f.size_bytes,
-            mime_type: f.mime_type,
-            checksum: f.checksum,
-            checksum_type: None, // TODO: ?
-            modified_at: Some(modified_at),
         }
     }
 }

@@ -9,12 +9,10 @@ use futures_util::StreamExt;
 use indicatif::ProgressBar;
 use prost_types::Timestamp;
 use req_packager::{
-    grpc::{
+    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, FileEntry, HandlerId, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId, grpc::{
         self, dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
-    },
-    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, HandlerId, TaskHandler,
-    ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
+    }
 };
 use tonic_health::server::HealthReporter;
 
@@ -41,7 +39,7 @@ trait CrawlFileExt {
         self,
         client: &Client,
         mp: impl ProgressManager,
-    ) -> BoxStream<'static, Result<grpc::FileEntry, Exn<CrawlerError>>>;
+    ) -> BoxStream<'static, Result<FileEntry, Exn<CrawlerError>>>;
 }
 
 impl CrawlFileExt for datahugger::Dataset {
@@ -49,7 +47,7 @@ impl CrawlFileExt for datahugger::Dataset {
         self,
         client: &Client,
         mp: impl ProgressManager,
-    ) -> BoxStream<'static, Result<grpc::FileEntry, Exn<CrawlerError>>> {
+    ) -> BoxStream<'static, Result<FileEntry, Exn<CrawlerError>>> {
         let root_dir = self.root_dir();
         crawl(
             client.clone(),
@@ -62,7 +60,6 @@ impl CrawlFileExt for datahugger::Dataset {
                 Ok(Entry::Dir(_)) => None,
                 Ok(Entry::File(f)) => {
                     let f: FileEntry = f.into();
-                    let f: grpc::FileEntry = f.into();
                     Some(Ok(f))
                 }
                 Err(e) => Some(Err(e)),
@@ -102,7 +99,7 @@ impl DataSource for DatahuggerDataSource {
         Ok(info)
     }
 
-    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, grpc::FileEntry>> {
+    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
         let user_agent = format!(
             "datahugger-over-eosc-coordinator/{}",
             env!("CARGO_PKG_VERSION")
@@ -138,7 +135,7 @@ impl MockToolSrc {
 
 #[async_trait::async_trait]
 impl ToolSource for MockToolSrc {
-    async fn find_tools(&self, files: &[grpc::FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
         let tools = self.tools.clone();
         Ok(tools)
     }
@@ -172,7 +169,7 @@ impl Dispatcher for MockDispatcher {
         &self,
         uid: &str,
         tool: &ToolMeta,
-        files: &HashMap<String, grpc::FileEntry>,
+        files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -278,7 +275,7 @@ impl Dispatcher for MockDispatcher {
 
                 Some((
                     key.clone(),
-                    // XXX: @reggie galaxy specific info
+                    // @reggie galaxy specific info
                     serde_json::json!({
                         "class": "File",
                         "filetype": filetype,
@@ -392,53 +389,6 @@ impl From<DatasetInfo> for grpc::DatasetInfo {
             created_at: Some(created_at),
             updated_at: Some(updated_at),
             tags: d.tags,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct FileEntry {
-    download_url: Option<String>,
-    path: String,
-    is_dir: bool,
-    size_bytes: u64,
-    mime_type: Option<String>,
-    checksum: Option<String>,
-    modified_at: DateTime<Utc>,
-}
-
-impl From<FileMeta> for FileEntry {
-    fn from(meta: FileMeta) -> Self {
-        FileEntry {
-            download_url: Some(meta.download_url().to_string()),
-            path: meta.path().to_string(),
-            // XXX: for some dataset, this can be a folder
-            is_dir: false,
-            // XXX: how to deal the case when size is unknown from datahugger?
-            size_bytes: meta.size().unwrap_or(0),
-            mime_type: meta.mimetype().map(|m| format!("{m}")),
-            checksum: None,
-            // XXX: modified time??
-            modified_at: DateTime::from_timestamp_nanos(323),
-        }
-    }
-}
-
-impl From<FileEntry> for grpc::FileEntry {
-    fn from(f: FileEntry) -> Self {
-        let modified_at = Timestamp {
-            seconds: f.modified_at.timestamp(),
-            nanos: 0,
-        };
-        grpc::FileEntry {
-            download_url: f.download_url,
-            path: f.path,
-            is_dir: f.is_dir,
-            size_bytes: f.size_bytes,
-            mime_type: f.mime_type,
-            checksum: f.checksum,
-            checksum_type: None, // TODO: ?
-            modified_at: Some(modified_at),
         }
     }
 }

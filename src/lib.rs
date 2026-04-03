@@ -1,6 +1,8 @@
 pub mod grpc {
     include!("./generated/coordinator.v1.rs");
 }
+use chrono::{DateTime, Utc};
+use datahugger::FileMeta;
 use futures_util::{StreamExt, TryStreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::Serialize;
@@ -13,7 +15,7 @@ use grpc::{
     browse_error::ErrorCode,
     dataset_service_server::DatasetService,
     BrowseComplete, BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, BrowseProgress,
-    DatasetInfo, FileEntry,
+    DatasetInfo,
 };
 
 use prost_types::Timestamp;
@@ -61,6 +63,60 @@ pub trait DataSource: Send + Sync + 'static {
     /// # Errors
     /// ???
     async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>>;
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FileEntry {
+    pub download_url: Option<String>,
+    pub path: String,
+    pub is_dir: bool,
+    pub size_bytes: u64,
+    pub mime_type: Option<String>,
+    pub checksum: Option<String>,
+    pub modified_at: DateTime<Utc>,
+}
+
+impl From<FileMeta> for FileEntry {
+    fn from(meta: FileMeta) -> Self {
+        FileEntry {
+            download_url: Some(meta.download_url().to_string()),
+            path: meta.path().to_string(),
+            // XXX: for some dataset, this can be a folder
+            is_dir: false,
+            // XXX: how to deal the case when size is unknown from datahugger?
+            size_bytes: meta.size().unwrap_or(0),
+            mime_type: meta.mimetype().map(|m| format!("{m}")),
+            checksum: None,
+            // XXX: modified time??
+            modified_at: DateTime::from_timestamp_nanos(323),
+        }
+    }
+}
+
+impl From<FileEntry> for grpc::FileEntry {
+    fn from(f: FileEntry) -> Self {
+        let modified_at = Timestamp {
+            seconds: f.modified_at.timestamp(),
+            nanos: 0,
+        };
+        grpc::FileEntry {
+            download_url: f.download_url,
+            path: f.path,
+            is_dir: f.is_dir,
+            size_bytes: f.size_bytes,
+            mime_type: f.mime_type,
+            checksum: f.checksum,
+            checksum_type: None, // TODO: ?
+            modified_at: Some(modified_at),
+        }
+    }
+}
+
+
+impl From<grpc::FileEntry> for FileEntry {
+    fn from(value: grpc::FileEntry) -> Self {
+        todo!()
+    }
 }
 
 #[derive(Debug)]
@@ -199,7 +255,7 @@ impl DatasetService for DataRelayer {
                     if let Err(err) = tx
                         .send(Ok(BrowseDatasetResponse {
                             phase: BrowsePhase::PhaseBrowsing as i32,
-                            event: Some(Event::FileEntry(file.clone())),
+                            event: Some(Event::FileEntry(file.clone().into())),
                         }))
                         .await
                     {
@@ -218,7 +274,7 @@ impl DatasetService for DataRelayer {
                         .ok();
                     } else {
                         // Ok
-                        let (new_files, new_bytes) = if !file.is_dir {
+                        let (new_files, new_bytes) = if !file.is_dir.clone() {
                             let new_files = files_count.fetch_add(1, Ordering::Relaxed) + 1;
 
                             let new_bytes =
@@ -376,7 +432,7 @@ impl DatasetService for DataRelayer {
                     if let Err(err) = tx
                         .send(Ok(BrowseDatasetResponse {
                             phase: BrowsePhase::PhaseBrowsing as i32,
-                            event: Some(Event::FileEntry(file.clone())),
+                            event: Some(Event::FileEntry(file.clone().into())),
                         }))
                         .await
                     {
@@ -658,10 +714,16 @@ impl ToolService for ToolDatabase {
     ) -> Result<Response<FindToolsResponse>, Status> {
         tracing::info!("Got a request to query tools: {req:?}");
         let req = req.get_ref();
+        let files: Vec<FileEntry> = req
+            .files
+            .clone()
+            .into_iter()
+            .map(|f| f.into())
+            .collect::<Vec<_>>();
 
         let tools = self
             .tool_source
-            .find_tools(&req.files)
+            .find_tools(&files)
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
@@ -877,7 +939,12 @@ impl DataplayerService for Dataplayer {
         let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
-        let slots_mapping = &req.slots_mapping;
+        let slots_mapping = &req
+            .slots_mapping
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
 
