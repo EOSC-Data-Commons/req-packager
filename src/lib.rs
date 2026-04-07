@@ -1,7 +1,7 @@
 pub mod grpc {
     include!("./generated/coordinator.v1.rs");
 }
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use datahugger::FileMeta;
 use futures_util::{StreamExt, TryStreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -15,7 +15,6 @@ use grpc::{
     browse_error::ErrorCode,
     dataset_service_server::DatasetService,
     BrowseComplete, BrowseDatasetRequest, BrowseDatasetResponse, BrowseError, BrowseProgress,
-    DatasetInfo,
 };
 
 use prost_types::Timestamp;
@@ -52,6 +51,42 @@ fn current_timestamp() -> Timestamp {
     Timestamp {
         seconds: now.as_secs().cast_signed(),
         nanos: now.subsec_nanos().cast_signed(),
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DatasetInfo {
+    pub uuid: Uuid,
+    pub url: String,
+    pub id: String,
+    pub description: String,
+    pub total_files: Option<u64>,
+    pub total_size_bytes: Option<u64>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub tags: HashMap<String, String>,
+}
+
+impl From<DatasetInfo> for grpc::DatasetInfo {
+    fn from(d: DatasetInfo) -> Self {
+        let created_at = d.created_at.map(|t| Timestamp {
+            seconds: t.timestamp(),
+            nanos: 0,
+        });
+        let updated_at = d.updated_at.map(|t| Timestamp {
+            seconds: t.timestamp(),
+            nanos: 0,
+        });
+        grpc::DatasetInfo {
+            url_datarepo: d.url,
+            id_dataset: d.id,
+            description: d.description,
+            total_files: d.total_files,
+            total_size_bytes: d.total_size_bytes,
+            created_at,
+            updated_at,
+            tags: d.tags,
+        }
     }
 }
 
@@ -112,10 +147,22 @@ impl From<FileEntry> for grpc::FileEntry {
     }
 }
 
-
 impl From<grpc::FileEntry> for FileEntry {
     fn from(value: grpc::FileEntry) -> Self {
-        todo!()
+        let modified_at = value
+            .modified_at
+            .map(|ts| Utc.timestamp_opt(ts.seconds, ts.nanos as u32).unwrap())
+            .unwrap_or(Utc.timestamp_opt(0, 0).unwrap());
+
+        FileEntry {
+            download_url: value.download_url,
+            path: value.path,
+            is_dir: value.is_dir,
+            size_bytes: value.size_bytes,
+            mime_type: value.mime_type,
+            checksum: value.checksum,
+            modified_at,
+        }
     }
 }
 
@@ -195,7 +242,7 @@ impl DatasetService for DataRelayer {
             };
             tx.send(Ok(BrowseDatasetResponse {
                 phase: BrowsePhase::PhaseInit as i32,
-                event: Some(Event::DatasetInfo(dataset_info.clone())),
+                event: Some(Event::DatasetInfo(dataset_info.clone().into())),
             }))
             .await
             .ok();
@@ -284,6 +331,10 @@ impl DatasetService for DataRelayer {
                         } else {
                             (0,0)
                         };
+                        let percent = match dataset_info.total_files {
+                            Some(nfiles) => ((new_files as f64 / nfiles as f64) * 100.0) as u32,
+                            None => 1,
+                        };
                         tx.send(Ok(BrowseDatasetResponse {
                             phase: BrowsePhase::PhaseBrowsing as i32,
                             event: Some(Event::Progress(BrowseProgress {
@@ -293,8 +344,7 @@ impl DatasetService for DataRelayer {
                                 // respond arrive in client side without orders.
                                 // let the client compute the progress.
                                 #[allow(clippy::cast_possible_truncation)]
-                                percent: ((new_files as f64
-                                    / dataset_info.total_files() as f64) * 100.0) as u32,
+                                percent,
                                 path: None,
                         })),
                         }))
@@ -314,8 +364,8 @@ impl DatasetService for DataRelayer {
 
             let files_count = files_count.load(Ordering::Relaxed);
             let bytes_count = bytes_count.load(Ordering::Relaxed);
-            let success = files_count == dataset_info.total_files()
-                && bytes_count == dataset_info.total_size_bytes();
+            let success = files_count == dataset_info.clone().total_files.unwrap_or(1)
+                && bytes_count == dataset_info.clone().total_size_bytes.unwrap_or(1);
 
             tx.send(Ok(BrowseDatasetResponse {
                 phase: BrowsePhase::PhaseCompleted as i32,
@@ -377,7 +427,7 @@ impl DatasetService for DataRelayer {
             };
             tx.send(Ok(BrowseDatasetResponse {
                 phase: BrowsePhase::PhaseInit as i32,
-                event: Some(Event::DatasetInfo(dataset_info.clone())),
+                event: Some(Event::DatasetInfo(dataset_info.clone().into())),
             }))
             .await
             .ok();
@@ -470,7 +520,7 @@ impl DatasetService for DataRelayer {
                                 // respond arrive in client side without orders.
                                 #[allow(clippy::cast_possible_truncation)]
                                 percent: ((new_files as f64
-                                    / dataset_info.total_files() as f64) * 100.0) as u32,
+                                    / dataset_info.total_files.unwrap() as f64) * 100.0) as u32,
                                 path: None,
                         })),
                         }))
@@ -490,8 +540,9 @@ impl DatasetService for DataRelayer {
 
             let files_count = files_count.load(Ordering::Relaxed);
             let bytes_count = bytes_count.load(Ordering::Relaxed);
-            let success = files_count == dataset_info.total_files()
-                && bytes_count == dataset_info.total_size_bytes();
+            // FIXME: unwrap_or default is made up
+            let success = files_count == dataset_info.clone().total_files.unwrap_or(1)
+                && bytes_count == dataset_info.clone().total_size_bytes.unwrap_or(1);
 
             tx.send(Ok(BrowseDatasetResponse {
                 phase: BrowsePhase::PhaseCompleted as i32,

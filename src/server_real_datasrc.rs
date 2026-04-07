@@ -1,24 +1,23 @@
 use datahugger::{
     crawl,
     crawler::{CrawlerError, ProgressManager},
-    resolve, resolve_doi_to_url, Entry, FileMeta,
+    resolve, resolve_doi_to_url, Entry,
 };
 use exn::Exn;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use indicatif::ProgressBar;
-use prost_types::Timestamp;
 use req_packager::{
-    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, FileEntry, HandlerId, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId, grpc::{
-        self, dataplayer_service_server::DataplayerServiceServer,
+    grpc::{
+        dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
-    }
+    },
+    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
+    TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
 };
 use tonic_health::server::HealthReporter;
 
-use chrono::{DateTime, Utc};
 use reqwest::{Client, ClientBuilder};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -84,11 +83,12 @@ impl ProgressManager for NoProgress {
 
 #[async_trait::async_trait]
 impl DataSource for DatahuggerDataSource {
-    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<grpc::DatasetInfo> {
+    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<DatasetInfo> {
         let url = uuid;
-        let info = grpc::DatasetInfo {
-            url_datarepo: url.to_string(),
-            id_dataset: "dummy".to_string(),
+        let info = DatasetInfo {
+            uuid: Uuid::new_v4(),
+            url: url.to_string(),
+            id: "dummy".to_string(),
             description: "datahugger not yet support dataset metadata harvesting".to_string(),
             total_files: None,
             total_size_bytes: None,
@@ -112,6 +112,7 @@ impl DataSource for DatahuggerDataSource {
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         }
+        dbg!(&url);
         let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let mp = NoProgress;
         let files = ds
@@ -235,7 +236,7 @@ impl Dispatcher for MockDispatcher {
         // }
         //
         // enum RuntimeKind {
-        //     Galaxy,    
+        //     Galaxy,
         //     RRP,
         //     VIP,
         // }
@@ -247,7 +248,7 @@ impl Dispatcher for MockDispatcher {
         //              ...
         //          }
         //      }
-        // } 
+        // }
         //
         // // json will be like
         // // {
@@ -262,7 +263,7 @@ impl Dispatcher for MockDispatcher {
 
         let workflow_id = match tool.id.as_str() {
             "uuid-1" => "https://dockstore.org/api/ga4gh/trs/v2/tools/%23workflow%2Fgithub.com%2Flaitanawe%2Fismb2024%2Fgalaxy_example/versions/main/PLAIN_GALAXY/descriptor//Galaxy-Workflow-reverse_file_galaxy_workflow.ga",
-            "uuid-2" => "https://dockstore.org/api/ga4gh/trs/v2/tools/%23workflow%2Fgithub.com%2Fbwalkowi%2Fgalaxy-workflow-ocr-test%2Fmain/versions/main/PLAIN_GALAXY/descriptor//galaxy-workflow-ocr-test-DaSCH.ga",
+            "uuid-2" => "https://workflowhub.eu/ga4gh/trs/v2/tools/2014/versions/1",
             _ => panic!("this is a mock, crapy mock, but already tell much more than dispatcher."),
         };
 
@@ -354,42 +355,6 @@ impl Dispatcher for MockDispatcher {
         let hd = db.get(task_uuid).unwrap();
         let status = hd.state.clone();
         Ok(status)
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct DatasetInfo {
-    uuid: Uuid,
-    url: String,
-    id: String,
-    description: String,
-    total_files: Option<u64>,
-    total_size_bytes: Option<u64>,
-    create_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    tags: HashMap<String, String>,
-}
-
-impl From<DatasetInfo> for grpc::DatasetInfo {
-    fn from(d: DatasetInfo) -> Self {
-        let created_at = Timestamp {
-            seconds: d.create_at.timestamp(),
-            nanos: 0,
-        };
-        let updated_at = Timestamp {
-            seconds: d.updated_at.timestamp(),
-            nanos: 0,
-        };
-        grpc::DatasetInfo {
-            url_datarepo: d.url,
-            id_dataset: d.id,
-            description: d.description,
-            total_files: d.total_files,
-            total_size_bytes: d.total_size_bytes,
-            created_at: Some(created_at),
-            updated_at: Some(updated_at),
-            tags: d.tags,
-        }
     }
 }
 

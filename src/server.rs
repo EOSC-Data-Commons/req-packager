@@ -3,9 +3,16 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    Artifact, DataRelayer, DataSource, Dataplayer, Dispatcher, DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, grpc::{
-        self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
-    }
+    grpc::{
+        self,
+        dataplayer_service_server::DataplayerServiceServer,
+        dataset_service_server::DatasetServiceServer,
+        tool_service_server::{ToolService, ToolServiceServer},
+        tool_state, ToolTaskHandler,
+    },
+    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, DispatcherClient,
+    FileEntry, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta,
+    ToolRegistryClient, ToolSource, ToolState, UserId,
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -49,7 +56,7 @@ impl MockDataSource {
 
 #[async_trait::async_trait]
 impl DataSource for MockDataSource {
-    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<grpc::DatasetInfo> {
+    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<DatasetInfo> {
         // XXX: very fragile to use url+id, should be a PID or other primary key in DB.
         match self.datasets.get(uuid) {
             Some(dataset) => {
@@ -188,42 +195,6 @@ impl Dispatcher for MockDispatcher {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct DatasetInfo {
-    uuid: Uuid,
-    url: String,
-    id: String,
-    description: String,
-    total_files: Option<u64>,
-    total_size_bytes: Option<u64>,
-    create_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    tags: HashMap<String, String>,
-}
-
-impl From<DatasetInfo> for grpc::DatasetInfo {
-    fn from(d: DatasetInfo) -> Self {
-        let created_at = Timestamp {
-            seconds: d.create_at.timestamp(),
-            nanos: 0,
-        };
-        let updated_at = Timestamp {
-            seconds: d.updated_at.timestamp(),
-            nanos: 0,
-        };
-        grpc::DatasetInfo {
-            url_datarepo: d.url,
-            id_dataset: d.id,
-            description: d.description,
-            total_files: d.total_files,
-            total_size_bytes: d.total_size_bytes,
-            created_at: Some(created_at),
-            updated_at: Some(updated_at),
-            tags: d.tags,
-        }
-    }
-}
-
 fn generate_fake_files(total: u64) -> Vec<FileEntry> {
     let mut rng = rng();
     let now = Utc::now();
@@ -327,8 +298,8 @@ fn generate_datasets() -> Vec<Dataset> {
             description: format!("Mock dataset number {i}"),
             total_files: Some(total_files),
             total_size_bytes: Some(total_size_bytes),
-            create_at: created,
-            updated_at: updated,
+            created_at: Some(created),
+            updated_at: Some(updated),
             tags,
         };
 
