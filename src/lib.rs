@@ -724,6 +724,7 @@ pub struct RequestPackager {
 //
 #[async_trait::async_trait]
 pub trait ToolSource: Send + Sync + 'static {
+    async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>>;
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta>;
 }
@@ -779,6 +780,7 @@ impl ToolService for ToolDatabase {
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
             .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+        tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
             .map(|t| t.into())
@@ -833,6 +835,7 @@ impl From<grpc::ToolState> for ToolState {
 
 #[derive(Debug, Clone)]
 pub struct ToolMeta {
+    /// Id of EOSC tool, which is the id in the tool registry
     pub id: String,
     pub version: String,
     pub name: String,
@@ -999,14 +1002,14 @@ impl DataplayerService for Dataplayer {
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
 
-        let id = self
+        let task_id = self
             .dispatcher
             .launch(&user, &tool_meta, slots_mapping)
             .await
             .unwrap();
 
         Ok(Response::new(LaunchToolResponse {
-            handler_id: id.to_string(),
+            handler_id: task_id.to_string(),
         }))
     }
 

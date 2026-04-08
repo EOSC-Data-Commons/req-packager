@@ -103,6 +103,10 @@ impl MockToolSrc {
 
 #[async_trait::async_trait]
 impl ToolSource for MockToolSrc {
+    async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
+        todo!()
+    }
+
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
         // XXX: very dummy to guess tool by number of files, it needs to be the file mime-type,
         // even in PoC. smart a bit on n % 10.
