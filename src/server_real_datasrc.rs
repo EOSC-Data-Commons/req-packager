@@ -15,6 +15,7 @@ use req_packager::{
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
     TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
 };
+use serde::Deserialize;
 use tonic_health::server::HealthReporter;
 
 use reqwest::{Client, ClientBuilder};
@@ -124,30 +125,115 @@ impl DataSource for DatahuggerDataSource {
     }
 }
 
-struct MockToolSrc {
-    tools: Vec<ToolMeta>,
+/// init with the root_api url, must be an valid url, to the version.
+/// A valid example is:
+/// http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/
+pub struct ToolRegistry {
+    root_api: Url,
 }
 
-impl MockToolSrc {
-    fn new(tools: Vec<ToolMeta>) -> Self {
-        MockToolSrc { tools }
+impl ToolRegistry {
+    fn new(root_api: Url) -> Self {
+        ToolRegistry { root_api }
     }
+}
+
+#[derive(Deserialize, Debug)]
+struct Slot {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    slot_type: String,
+    // TODO: file_formats: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct OneToolResponse {
+    // XXX: @reggie, maybe this better to be some special string type id?
+    id: u64,
+    uri: String,
+    name: String,
+    description: String,
+    types: Vec<String>,
+    version: String,
+    input_slots: Vec<Slot>,
 }
 
 #[async_trait::async_trait]
-impl ToolSource for MockToolSrc {
-    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
-        let tools = self.tools.clone();
-        Ok(tools)
-    }
-    async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
-        for tool in self.tools.iter() {
-            if tool.id.as_str() == id {
-                return Ok(tool.clone());
-            }
-        }
+impl ToolSource for ToolRegistry {
+    async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
+        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
+        let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
+        tracing::info!("url: {}", url);
+        let resp = reqwest::get(url).await?;
+        let resp: Vec<OneToolResponse> = resp.json().await?;
+        tracing::info!("resp is: {:?}", resp);
+        let tools = resp
+            .into_iter()
+            .map(|res| {
+                let slots = res
+                    .input_slots
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>();
 
-        anyhow::bail!("tool {id} not found")
+                ToolMeta {
+                    id: res.id.to_string(),
+                    version: res.version,
+                    name: res.name,
+                    description: res.description,
+                    slots,
+                }
+            })
+            .collect::<Vec<_>>();
+        return Ok(tools);
+    }
+
+    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
+        let url = format!("{}/tools/?name=OCR", self.root_api.as_str());
+        tracing::info!("url: {}", url);
+        let resp = reqwest::get(url).await?;
+        let resp: Vec<OneToolResponse> = resp.json().await?;
+        tracing::info!("resp is: {:?}", resp);
+        let tools = resp
+            .into_iter()
+            .map(|res| {
+                let slots = res
+                    .input_slots
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>();
+
+                ToolMeta {
+                    id: res.id.to_string(),
+                    version: res.version,
+                    name: res.name,
+                    description: res.description,
+                    slots,
+                }
+            })
+            .collect::<Vec<_>>();
+        return Ok(tools);
+    }
+
+    async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
+        let url = format!("{}/tools/{}", self.root_api.as_str(), id);
+        let resp: OneToolResponse = reqwest::get(url).await?.json().await?;
+        let slots = resp
+            .input_slots
+            .into_iter()
+            .map(|s| s.name)
+            .collect::<Vec<_>>();
+
+        let tool = ToolMeta {
+            id: id.to_string(),
+            version: resp.version,
+            name: resp.name,
+            description: resp.description,
+            slots,
+        };
+        return Ok(tool);
     }
 }
 
@@ -252,18 +338,47 @@ impl Dispatcher for MockDispatcher {
         //
         // // json will be like
         // // {
-        // //   "id": "uuid-1",
+        // //   "id": "toolid-706",
         // //   "runtime": {
-        // //     "config": {"workflow_id": "xxx", "workflow_target_type": "trs_url"}
+        // //     "config": {
+        // //       "workflow_id": "xxx", 
+        // //       "workflow_target_type": "trs_url",
+        // //       "request_state": {
+        // //         "simpletext_input": {
+        // //           "class": "File",
+        // //           "filetype": "txt",
+        // //           "location": "https://example-files.online-convert.com/document/txt/example.txt"
+        // //         }
+        // //       }
+        // //     }
         // //   }
         // // }
         //
         // proxy/plugin runs for every VRE in its own process and talk to dispatcher with a well
         // defined protocol.
 
+        // TODO: tool slots type need to be validated here before send the final launch action.
+        // This can also happens in the frontend to prevent user pass the wrong type.
+        // libmagic (its ML support version) can be used to do file type validation beyond the
+        // extension.
+
+        // NOTE: the actual logic here should be:
+        // 1. check the tool type, if it is a) from workflowhub and b) galaxy tool
+        // 2. get the workflowhub ga4ph link.
+        // 3. assemble the payload
+        // 4. send the payload
+        //
+        // NOTE: There are two variable approaches: 
+        // 1. tool meta contains only the vre id, the vre payload in assemble by the specific
+        //    service.
+        // 2. tool meta contains runtime type (id to identify the vre again), but contain the
+        //    config with known layout for VREs.
+        //
+        // jyu: approach (1) is more proper in production, but require dispatcher / or another
+        // component play the role as "VRE" registry.
         let workflow_id = match tool.id.as_str() {
             "uuid-1" => "https://dockstore.org/api/ga4gh/trs/v2/tools/%23workflow%2Fgithub.com%2Flaitanawe%2Fismb2024%2Fgalaxy_example/versions/main/PLAIN_GALAXY/descriptor//Galaxy-Workflow-reverse_file_galaxy_workflow.ga",
-            "uuid-2" => "https://workflowhub.eu/ga4gh/trs/v2/tools/2014/versions/1",
+            "706" => "https://workflowhub.eu/ga4gh/trs/v2/tools/2014/versions/1",
             _ => panic!("this is a mock, crapy mock, but already tell much more than dispatcher."),
         };
 
@@ -358,24 +473,6 @@ impl Dispatcher for MockDispatcher {
     }
 }
 
-fn generate_tools() -> Vec<ToolMeta> {
-    let tool01 = ToolMeta {
-        id: "uuid-1".to_string(),
-        version: "v0".to_string(),
-        name: "Text file reversion (Galaxy)".to_string(),
-        description: "Reverse the content of a text file".to_string(),
-        slots: vec!["simpletext_input".to_string()],
-    };
-    let tool02 = ToolMeta {
-        id: "uuid-2".to_string(),
-        version: "v0".to_string(),
-        name: "OCR + word cloud (Galaxy)".to_string(),
-        description: "Perform OCR on an image and generate a word cloud".to_string(),
-        slots: vec!["Input Image".to_string(), "Upload Stopwords".to_string()],
-    };
-    vec![tool01, tool02]
-}
-
 async fn report_service_status(reporter: HealthReporter) {
     // TODO: the real report should report all sub-services by making health check to the source
     loop {
@@ -413,8 +510,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_src = Arc::new(DatahuggerDataSource::new());
     let data_relayer = DataRelayer::new(data_src);
 
-    let tools = generate_tools();
-    let tool_src = Arc::new(MockToolSrc::new(tools));
+    let root_api = Url::from_str("http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1")
+        .expect("invalid url");
+    let tool_src = Arc::new(ToolRegistry::new(root_api));
     let tool_src_cloned = Arc::clone(&tool_src);
     let tool_srv = ToolDatabase::new(tool_src_cloned);
 
