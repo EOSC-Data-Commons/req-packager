@@ -1027,6 +1027,7 @@ pub mod tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// XXX: this might useless, deprecate it.
         pub async fn browse_tools(
             &mut self,
             request: impl tonic::IntoRequest<super::BrowseToolsRequest>,
@@ -1093,6 +1094,7 @@ pub mod tool_service_server {
             >
             + std::marker::Send
             + 'static;
+        /// XXX: this might useless, deprecate it.
         async fn browse_tools(
             &self,
             request: tonic::Request<super::BrowseToolsRequest>,

@@ -198,6 +198,7 @@ service ToolService {
   // Search tools from an input text
   rpc SearchToolsByText(SearchToolsByTextRequest) returns (SearchToolsByTextResponse);
 
+  // XXX: this might useless, deprecate it.
   rpc BrowseTools(BrowseToolsRequest)
     returns (stream BrowseToolsResponse);
 }
