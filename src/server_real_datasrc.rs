@@ -162,7 +162,31 @@ struct OneToolResponse {
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
-        todo!()
+        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
+        let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
+        tracing::info!("url: {}", url);
+        let resp = reqwest::get(url).await?;
+        let resp: Vec<OneToolResponse> = resp.json().await?;
+        tracing::info!("resp is: {:?}", resp);
+        let tools = resp
+            .into_iter()
+            .map(|res| {
+                let slots = res
+                    .input_slots
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>();
+
+                ToolMeta {
+                    id: res.id.to_string(),
+                    version: res.version,
+                    name: res.name,
+                    description: res.description,
+                    slots,
+                }
+            })
+            .collect::<Vec<_>>();
+        return Ok(tools);
     }
 
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
