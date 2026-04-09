@@ -379,6 +379,41 @@ On the server side there is always a logic type that can converted to the autoge
 
 For some struct such as `UserId` this seems a bit redundant, but for struct such as `TaskHandler` which can have more complex struct on the logic side because it requires to talk to the persistent system while the message type is simpler.
 
+### RFC 008: Distinguishing best-match and manual tool search
+
+#### Motivation
+
+EDC provides a basic matching mechanism that maps input files to potentially useful tools.
+However, there are strong use cases where users already know which tool they want to use, even if that tool is not suggested by the matching system.
+
+Our goal is to build a highly accurate matching mechanism that consistently recommends the right tools for a given dataset or selected files. 
+In practice, however, a perfect matching system may not be achievable, both in development and in production.
+
+Therefore, we must support scenarios where users explicitly want to use a specific tool, regardless of the system’s recommendations.
+
+#### Proposal
+
+In the backend implementation, the data layer will expose two interfaces for retrieving tools:
+
+1. `MatchToolsFromData`
+   Returns a list of tools inferred from the provided data (e.g., files or datasets, or user specific profile information), based on the matching mechanism.
+
+2. `SearchToolsFromText`
+   Returns tools based on user-provided text input, enabling manual search and explicit selection.
+
+For simplicity, the initial implementation of `SearchToolsFromText` will leverage the existing query interface from the tool registry:
+
+In the frontend, the "best match" tools will show first (using the dummy matching logic we have for release 1).
+And the search text box is provide so that user can get tool by the text. 
+
+```
+?name=<text>
+```
+
+#### Extension
+
+`SearchToolsFromText` can serve as the foundation for more advanced search capabilities, including AI-powered semantic search in the future.
+
 ## Components (functional requirements)
 
 ### Component 001
