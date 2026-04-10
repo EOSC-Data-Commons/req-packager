@@ -113,7 +113,6 @@ impl DataSource for DatahuggerDataSource {
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         }
-        dbg!(&url);
         let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let mp = NoProgress;
         let files = ds
@@ -167,7 +166,7 @@ impl ToolSource for ToolRegistry {
         tracing::info!("url: {}", url);
         let resp = reqwest::get(url).await?;
         let resp: Vec<OneToolResponse> = resp.json().await?;
-        tracing::info!("resp is: {:?}", resp);
+        // tracing::info!("resp is: {:?}", resp);
         let tools = resp
             .into_iter()
             .map(|res| {
@@ -180,6 +179,8 @@ impl ToolSource for ToolRegistry {
                 ToolMeta {
                     id: res.id.to_string(),
                     version: res.version,
+                    uri: res.uri,
+                    types: res.types,
                     name: res.name,
                     description: res.description,
                     slots,
@@ -191,11 +192,11 @@ impl ToolSource for ToolRegistry {
 
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
         // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
-        let url = format!("{}/tools/?name=OCR", self.root_api.as_str());
+        let url = format!("{}/tools/?name=?????", self.root_api.as_str());
         tracing::info!("url: {}", url);
         let resp = reqwest::get(url).await?;
         let resp: Vec<OneToolResponse> = resp.json().await?;
-        tracing::info!("resp is: {:?}", resp);
+        // tracing::info!("resp is: {:?}", resp);
         let tools = resp
             .into_iter()
             .map(|res| {
@@ -208,6 +209,8 @@ impl ToolSource for ToolRegistry {
                 ToolMeta {
                     id: res.id.to_string(),
                     version: res.version,
+                    uri: res.uri,
+                    types: res.types,
                     name: res.name,
                     description: res.description,
                     slots,
@@ -229,6 +232,8 @@ impl ToolSource for ToolRegistry {
         let tool = ToolMeta {
             id: id.to_string(),
             version: resp.version,
+            uri: resp.uri,
+            types: resp.types,
             name: resp.name,
             description: resp.description,
             slots,
@@ -341,7 +346,7 @@ impl Dispatcher for MockDispatcher {
         // //   "id": "toolid-706",
         // //   "runtime": {
         // //     "config": {
-        // //       "workflow_id": "xxx", 
+        // //       "workflow_id": "xxx",
         // //       "workflow_target_type": "trs_url",
         // //       "request_state": {
         // //         "simpletext_input": {
@@ -368,7 +373,7 @@ impl Dispatcher for MockDispatcher {
         // 3. assemble the payload
         // 4. send the payload
         //
-        // NOTE: There are two variable approaches: 
+        // NOTE: There are two variable approaches:
         // 1. tool meta contains only the vre id, the vre payload in assemble by the specific
         //    service.
         // 2. tool meta contains runtime type (id to identify the vre again), but contain the
@@ -376,76 +381,110 @@ impl Dispatcher for MockDispatcher {
         //
         // jyu: approach (1) is more proper in production, but require dispatcher / or another
         // component play the role as "VRE" registry.
-        let workflow_id = match tool.id.as_str() {
-            "uuid-1" => "https://dockstore.org/api/ga4gh/trs/v2/tools/%23workflow%2Fgithub.com%2Flaitanawe%2Fismb2024%2Fgalaxy_example/versions/main/PLAIN_GALAXY/descriptor//Galaxy-Workflow-reverse_file_galaxy_workflow.ga",
-            "706" => "https://workflowhub.eu/ga4gh/trs/v2/tools/2014/versions/1",
-            _ => panic!("this is a mock, crapy mock, but already tell much more than dispatcher."),
-        };
-
-        let request_state: serde_json::Map<String, serde_json::Value> = files
-            .iter()
-            .filter_map(|(key, entry)| {
-                let location = entry.download_url.as_deref()?;
-
-                let filetype = entry.path.rsplit('.').next().unwrap_or("txt");
-
-                Some((
-                    key.clone(),
-                    // @reggie galaxy specific info
-                    serde_json::json!({
-                        "class": "File",
-                        "filetype": filetype,
-                        "location": location
-                    }),
-                ))
-            })
-            .collect();
-
-        let payload = serde_json::json!({
-            "public": false,
-            "workflow_id": workflow_id,
-            "workflow_target_type": "trs_url",
-            "request_state": request_state,
-        });
-
-        #[derive(serde::Deserialize)]
-        struct Response {
-            uuid: String,
+        //
+        #[derive(Deserialize)]
+        struct VersionResp {
+            id: String,
+            name: String,
         }
 
-        let client = reqwest::Client::new();
-        // XXX: this is a blocking call, blocking call should not stay in async block.
-        // See if galaxy provide async call that return immediately with a handler to check the
-        // state.
-        let res = client
-            .post("https://usegalaxy.eu/api/workflow_landings")
-            .json(&payload)
-            .send()
-            .await?;
+        if tool.types.contains(&"galaxy_workflow".to_string())
+            && tool.types.contains(&"workflowhub".to_string())
+        {
+            let client = reqwest::Client::new();
+            let workflow_id = tool.uri.split('/').next_back().unwrap();
+            // XXX: @reggie, I need to make an extra call to get the latest version id, because
+            // what stored in your tool registry response is the tag of the version.
+            let res = client
+                .get(format!(
+                    "https://workflowhub.eu/ga4gh/trs/v2/tools/{}/versions",
+                    workflow_id
+                ))
+                .send()
+                .await?;
 
-        let data: Response = res.json().await.unwrap();
-        let landing_uuid = data.uuid;
-        let callback_url = Url::from_str(&format!(
-            "https://usegalaxy.eu/workflow_landings/{landing_uuid}?public=false"
-        ))
-        .expect("a valid url");
+            let resp_versions: Vec<VersionResp> = res.json().await?;
+            // XXX: sehr ugly
+            let version = resp_versions
+                .into_iter()
+                .filter(|i| i.name == tool.version)
+                .map(|i| i.id)
+                .collect::<Vec<_>>();
 
-        let id = uuid::Uuid::new_v4();
-        let artifact = Artifact::HostedTool {
-            callback: callback_url,
-        };
-        // TODO: use TaskHandler::new()
-        let task_handler = TaskHandler {
-            id: HandlerId(id),
-            user_id: UserId(uid.to_string()),
-            state: ToolState::Ready,
-            artifact,
-        };
+            // NOTE: only launch the latest version
+            // TODO: in tool registry, harvest all version and in matchmaker UI allow to select
+            // versions.
+            let workflow_id = format!(
+                "https://workflowhub.eu/ga4gh/trs/v2/tools/{}/versions/{}",
+                workflow_id, version[0],
+            );
 
-        let mut db = self.db.write().await;
-        db.entry(id).or_insert(task_handler);
+            let request_state: serde_json::Map<String, serde_json::Value> = files
+                .iter()
+                .filter_map(|(key, entry)| {
+                    let location = entry.download_url.as_deref()?;
 
-        Ok(id)
+                    let filetype = entry.path.rsplit('.').next().unwrap_or("txt");
+
+                    Some((
+                        key.clone(),
+                        // @reggie galaxy specific info
+                        serde_json::json!({
+                            "class": "File",
+                            "filetype": filetype,
+                            "location": location
+                        }),
+                    ))
+                })
+                .collect();
+
+            let payload = serde_json::json!({
+                "public": false,
+                "workflow_id": workflow_id,
+                "workflow_target_type": "trs_url",
+                "request_state": request_state,
+            });
+
+            #[derive(serde::Deserialize)]
+            struct Response {
+                uuid: String,
+            }
+
+            // XXX: this is a blocking call, blocking call should not stay in async block.
+            // See if galaxy provide async call that return immediately with a handler to check the
+            // state.
+            let res = client
+                .post("https://usegalaxy.eu/api/workflow_landings")
+                .json(&payload)
+                .send()
+                .await?;
+
+            let data: Response = res.json().await.unwrap();
+            let landing_uuid = data.uuid;
+            let callback_url = Url::from_str(&format!(
+                "https://usegalaxy.eu/workflow_landings/{landing_uuid}?public=false"
+            ))
+            .expect("a valid url");
+
+            let id = uuid::Uuid::new_v4();
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(id).or_insert(task_handler);
+
+            Ok(id)
+        } else {
+            panic!("unknown support VRE");
+        }
     }
 
     async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact> {

@@ -781,7 +781,7 @@ impl ToolService for ToolDatabase {
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
             .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
-        tracing::info!("tools: {:?}", tools);
+        // tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
             .map(|t| t.into())
@@ -858,17 +858,33 @@ impl From<grpc::ToolState> for ToolState {
 }
 
 #[derive(Debug, Clone)]
+pub struct RuntimeMeta {
+    kind: RuntimeKind, 
+    config: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeKind {
+    Galaxy,
+}
+
+#[derive(Debug, Clone)]
 pub struct ToolMeta {
     /// Id of EOSC tool, which is the id in the tool registry
     pub id: String,
     pub version: String,
     pub name: String,
+    pub uri: String,
+    pub types: Vec<String>,
     pub description: String,
     pub slots: Vec<String>,
+    // pub runtime: RuntimeMeta,
 }
 
 impl From<ToolMeta> for grpc::ToolMeta {
     fn from(value: ToolMeta) -> Self {
+        // XXX: this contains less info than the logic ToolMeta
+        // If this is correct, rename it and maybe just pass an tool-id is enough??
         grpc::ToolMeta {
             id: value.id,
             version: value.version,

@@ -321,6 +321,8 @@ fn generate_tools() -> Vec<ToolMeta> {
             id: format!("{i}"),
             version: "0.1.0alpha".to_string(),
             name: "".to_uppercase(),
+            uri: "".to_uppercase(),
+            types: vec![],
             description: "".to_uppercase(),
             slots: vec![],
         })
