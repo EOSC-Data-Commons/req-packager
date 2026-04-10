@@ -38,10 +38,11 @@ use uuid::Uuid;
 use crate::grpc::{
     dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
     tool_service_server::ToolService, tool_state, BrowseDatasetByUrlRequest, BrowseToolsRequest,
-    BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, FindToolsRequest,
-    FindToolsResponse, GetArtifactRequest, GetArtifactResponse, GetStateRequest, GetStateResponse,
-    GetToolRequest, HostedTool, LaunchToolRequest, LaunchToolResponse, MonitorStateRequest,
-    MonitorStateResponse, QueryUserRequest, QueryUserResponse, ToolResponse, ToolTaskHandler,
+    BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, GetArtifactRequest,
+    GetArtifactResponse, GetStateRequest, GetStateResponse, GetToolRequest, HostedTool,
+    LaunchToolRequest, LaunchToolResponse, MatchToolsByDataRequest, MatchToolsByDataResponse,
+    MonitorStateRequest, MonitorStateResponse, QueryUserRequest, QueryUserResponse,
+    SearchToolsByTextRequest, SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -760,10 +761,10 @@ impl ToolService for ToolDatabase {
         }))
     }
 
-    async fn find_tools(
+    async fn match_tools_by_data(
         &self,
-        req: Request<FindToolsRequest>,
-    ) -> Result<Response<FindToolsResponse>, Status> {
+        req: Request<MatchToolsByDataRequest>,
+    ) -> Result<Response<MatchToolsByDataResponse>, Status> {
         tracing::info!("Got a request to query tools: {req:?}");
         let req = req.get_ref();
         let files: Vec<FileEntry> = req
@@ -780,12 +781,35 @@ impl ToolService for ToolDatabase {
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
             .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+        // tracing::info!("tools: {:?}", tools);
+        let tools = tools
+            .into_iter()
+            .map(|t| t.into())
+            .collect::<Vec<grpc::ToolMeta>>();
+        Ok(Response::new(MatchToolsByDataResponse { tools }))
+    }
+
+    async fn search_tools_by_text(
+        &self,
+        req: Request<SearchToolsByTextRequest>,
+    ) -> Result<Response<SearchToolsByTextResponse>, Status> {
+        tracing::info!("Got a request to search tools by req: {:?}", req);
+        let req = req.get_ref();
+        let text = &req.text;
+
+        let tools = self
+            .tool_source
+            .search_tools_by_text(text)
+            .await
+            // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
+            // retry or report mechenism.
+            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
         tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
             .map(|t| t.into())
             .collect::<Vec<grpc::ToolMeta>>();
-        Ok(Response::new(FindToolsResponse { tools }))
+        Ok(Response::new(SearchToolsByTextResponse { tools }))
     }
 
     // TODO: not very useful? if so deprecate it.
@@ -834,17 +858,33 @@ impl From<grpc::ToolState> for ToolState {
 }
 
 #[derive(Debug, Clone)]
+pub struct RuntimeMeta {
+    kind: RuntimeKind, 
+    config: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeKind {
+    Galaxy,
+}
+
+#[derive(Debug, Clone)]
 pub struct ToolMeta {
     /// Id of EOSC tool, which is the id in the tool registry
     pub id: String,
     pub version: String,
     pub name: String,
+    pub uri: String,
+    pub types: Vec<String>,
     pub description: String,
     pub slots: Vec<String>,
+    // pub runtime: RuntimeMeta,
 }
 
 impl From<ToolMeta> for grpc::ToolMeta {
     fn from(value: ToolMeta) -> Self {
+        // XXX: this contains less info than the logic ToolMeta
+        // If this is correct, rename it and maybe just pass an tool-id is enough??
         grpc::ToolMeta {
             id: value.id,
             version: value.version,

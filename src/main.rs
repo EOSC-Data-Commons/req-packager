@@ -1,542 +1,570 @@
-#![allow(clippy::unused_async, clippy::too_many_lines)]
+use datahugger::{
+    crawl,
+    crawler::{CrawlerError, ProgressManager},
+    resolve, resolve_doi_to_url, Entry,
+};
+use exn::Exn;
+use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
-use std::{collections::HashMap, sync::OnceLock};
+use indicatif::ProgressBar;
+use req_packager::{
+    grpc::{
+        dataplayer_service_server::DataplayerServiceServer,
+        dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
+    },
+    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
+    TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
+};
+use serde::Deserialize;
+use tonic_health::server::HealthReporter;
 
-use axum::{
-    extract::{Path, Query},
-    response::{Html, IntoResponse, Response},
-    routing::{get, post},
-    Form, Json, Router,
-};
-use humansize::{make_format, DECIMAL};
-use jsonwebtoken::{encode, EncodingKey, Header};
-use once_cell::sync::Lazy;
-use req_packager::grpc::{
-    self, dataset_service_client::DatasetServiceClient, tool_service_client::ToolServiceClient,
-    BrowseDatasetRequest, FindToolsRequest, ToolMeta,
-};
-use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
-use tera::{Context, Tera};
-use tokio_util::io::StreamReader;
-use tonic::{metadata::MetadataValue, transport::Channel, Request};
-use tower_http::services::ServeDir;
+use reqwest::{Client, ClientBuilder};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
-static DATASETS: Lazy<HashMap<Uuid, DatasetMeta>> = Lazy::new(|| {
-    let mut map = HashMap::new();
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tonic::transport::Server;
+use url::Url;
 
-    let items = vec![
-        DatasetMeta {
-            uuid: compute_uuid_from_string("https://example.com/datasets/0"),
-            description: "(dataverse) Replication dataset for the study 'Urban Mobility Patterns in European Cities'. Includes anonymized GPS traces and processed mobility networks.".to_string(),
-            source_url: "https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6M2OVH".to_string(),
-        },
-        DatasetMeta {
-            uuid: compute_uuid_from_string("https://example.com/datasets/1"),
-            description: "(hal) Experimental data and simulation scripts for 'Thermal transport in layered van der Waals materials'. Contains raw measurement data and analysis notebooks.".to_string(),
-            source_url: "https://hal.science/hal-04234567".to_string(),
-        },
-        DatasetMeta {
-            uuid: compute_uuid_from_string("https://example.com/datasets/2"),
-            description: "(zenodo) Dataset accompanying the publication 'Benchmarking Graph Neural Networks for Molecular Property Prediction'. Includes curated molecular graphs and training splits.".to_string(),
-            source_url: "https://zenodo.org/records/10456789".to_string(),
-        },
-    ];
+struct DatahuggerDataSource;
 
-    for item in items {
-        map.insert(item.uuid, item);
-    }
-
-    map
-});
-
-pub fn templates() -> &'static Tera {
-    static TEMPLATES: OnceLock<Tera> = OnceLock::new();
-    TEMPLATES.get_or_init(|| {
-        let mut tera = match Tera::new("ui/templates/**/*") {
-            Ok(t) => t,
-            Err(err) => {
-                println!("Parsing error(s): {err}");
-                ::std::process::exit(1);
-            }
-        };
-        tera.autoescape_on(vec![".html", ".sql"]);
-        tera
-    })
-}
-
-pub fn get_dataset(uuid: &Uuid) -> Option<&'static DatasetMeta> {
-    DATASETS.get(uuid)
-}
-
-#[derive(Serialize, Debug, Clone)]
-struct FileMeta {
-    download_url: Option<String>,
-    data_path: String,
-    filename: String,
-    size: String,
-    is_dir: bool,
-    mimetype: Option<String>,
-}
-
-impl From<grpc::FileEntry> for FileMeta {
-    fn from(value: grpc::FileEntry) -> Self {
-        let formatter = make_format(DECIMAL);
-        Self {
-            download_url: value.download_url,
-            data_path: value.path.clone(),
-            filename: value.path.clone(),
-            size: formatter(value.size_bytes),
-            is_dir: value.is_dir,
-            mimetype: value.mime_type,
-        }
+impl DatahuggerDataSource {
+    fn new() -> Self {
+        DatahuggerDataSource
     }
 }
 
-impl From<FileMeta> for grpc::FileEntry {
-    fn from(value: FileMeta) -> Self {
-        // FIXME: I should not get it from text type send from request, better way to get the
-        // original data structure??
-        Self {
-            download_url: value.download_url,
-            path: value.data_path.clone(),
-            size_bytes: 0,
-            is_dir: value.is_dir,
-            mime_type: value.mimetype,
-            checksum_type: None,
-            checksum: None,
-            modified_at: None,
-        }
-    }
+trait CrawlFileExt {
+    fn crawl_file(
+        self,
+        client: &Client,
+        mp: impl ProgressManager,
+    ) -> BoxStream<'static, Result<FileEntry, Exn<CrawlerError>>>;
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Claims {
-    sub: String,
-    name: String,
-    role: String,
-    exp: usize,
-}
-
-pub fn create_token() -> String {
-    let claims = Claims {
-        sub: "user123".to_string(),
-        name: "Alice".to_string(),
-        role: "admin".to_string(),
-        exp: 1_999_999_999, // some expiration
-    };
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(b"my_secret_key"),
-    )
-    .unwrap()
-}
-
-async fn fetch_dataset_files(uuid: &Uuid) -> Result<Vec<FileMeta>, Box<dyn std::error::Error>> {
-    let token = create_token();
-    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse()?;
-
-    let channel = Channel::from_static("http://[::1]:50051").connect().await?;
-
-    let mut client =
-        DatasetServiceClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
-            req.metadata_mut()
-                .insert("authorization", meta_token.clone());
-            Ok(req)
-        });
-
-    let request = tonic::Request::new(BrowseDatasetRequest {
-        uuid: uuid.to_string(),
-        url_datarepo: "https://example.com/datasets".to_string(),
-        id_dataset: "1".to_string(),
-    });
-
-    let mut stream = client.browse_dataset(request).await?.into_inner();
-
-    let mut files = Vec::new();
-
-    while let Some(resp) = stream.message().await? {
-        if let Some(evt) = resp.event {
-            match evt {
-                grpc::browse_dataset_response::Event::FileEntry(entry) => {
-                    files.push(entry.into());
-                }
-                grpc::browse_dataset_response::Event::DatasetInfo(_) => {}
-                grpc::browse_dataset_response::Event::Progress(_) => {}
-                grpc::browse_dataset_response::Event::Complete(_) => break,
-                grpc::browse_dataset_response::Event::Error(err) => {
-                    eprintln!("error: {:?}", err);
-                }
-            }
-        }
-    }
-
-    Ok(files)
-}
-
-async fn inspect_dataset_repo(Path(uuid): Path<Uuid>) -> Html<String> {
-    // XXX: file list get from calling request on filemetrix
-    let files = fetch_dataset_files(&uuid).await.unwrap();
-    let mut context = Context::new();
-    context.insert("uuid", &uuid);
-    context.insert("files", &files);
-    let html = templates()
-        .render("dataset/file-list.html", &context)
-        .unwrap();
-    Html(html)
-}
-
-async fn repo_additional() -> Html<&'static str> {
-    Html(
-        r#"
-<ul class="tree" id="tree">
-  <details open>
-    <summary>
-      <span class="repo" data-path="src">https://github.com/eosc/ui-example</span>
-    </summary>
-    <ul>
-      <!-- Root folder -->
-      <li>
-        <details data-path="src" open>
-          <summary>
-            <span class="folder" data-path="src">📁 src</span>
-          </summary>
-          <ul>
-            <!-- Nested folder -->
-            <li>
-              <details data-path="src/components">
-                <summary>
-                  <span class="folder" data-path="src/components">📁 components</span>
-                </summary>
-                <ul>
-                  <li class="file" data-path="src/components/button.tsx">
-                    <span class="name">📄</span>
-                    <input type="checkbox" class="file-checkbox" data-path="src/components/button.tsx">
-                    <span class="filename">Button.tsx</span>
-                    <span class="meta">
-                      <span class="type">tsx</span>
-                      <span class="size">5 KB</span>
-                    </span>
-                  </li>
-                  <li class="file" data-path="src/components/modal.tsx">
-                    <span class="name">📄</span>
-                    <input type="checkbox" class="file-checkbox" data-path="src/components/modal.tsx">
-                    <span class="filename">Modal.tsx</span>
-                    <span class="meta">
-                      <span class="type">tsx</span>
-                      <span class="size">7 KB</span>
-                    </span>
-                  </li>
-                </ul>
-              </details>
-            </li>
-            <!-- Files inside src -->
-            <li class="file" data-path="src/main.ts">
-              <span class="name">📄</span>
-              <input type="checkbox" class="file-checkbox" data-path="src/main.ts">
-              <span class="filename">main.ts</span>
-              <span class="meta">
-                <span class="type">ts</span>
-                <span class="size">12 KB</span>
-              </span>
-            </li>
-            <li class="file" data-path="src/data.csv">
-              <span class="name">📄</span>
-              <input type="checkbox" class="file-checkbox" data-path="src/data.csv">
-              <span class="filename">data.csv</span>
-              <span class="meta">
-                <span class="type">csv</span>
-                <span class="size">2.1 MB</span>
-              </span>
-            </li>
-          </ul>
-        </details>
-      </li>
-    </ul>
-  </details>
-</ul>
-    "#,
-    )
-}
-
-async fn vre_with_id(Path(id): Path<u64>) -> Html<String> {
-    // XXX: from id to get the vre from tool registry
-    // FIXME: css not properly set for vre description that goes very long.
-    if id > 1 {
-        Html(format!(
-            r#"
-<h3>VRE entity: {id}</h3>
-<div class="vre-description">
-  <p>
-    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore
-  </p>
-</div>
-<div class="launch">
-  <button class="launch-btn" data-action="launch-vre">Launch</button>
-</div>
-<div class="vre-inputs">
-  <div class="vre-slot" data-slot="input-1">
-    <div class="slot-title">Input files A</div>
-    <div class="slot-hint">Drop files here</div>
-  </div>
-  <div class="vre-slot" data-slot="input-2">
-    <div class="slot-title">Input files B</div>
-    <div class="slot-hint">Drop files here</div>
-  </div>
-  <div class="vre-slot" data-slot="input-3">
-    <div class="slot-title">Input files C</div>
-    <div class="slot-hint">Drop files here</div>
-  </div>
-</div>
-    "#
-        ))
-    } else {
-        Html(format!(
-            r#"
-<h3>VRE entity: {id}</h3>
-<div class="vre-description">
-  <p>
-    Duis aute irure dolor in reprehenderit 
-  </p>
-</div>
-<div class="launch">
-  <button class="launch-btn" data-action="launch-vre">Launch</button>
-</div>
-<div class="vre-inputs">
-  <div class="vre-slot" data-slot="input-1">
-    <div class="slot-title">Input files A</div>
-    <div class="slot-hint">Drop files here</div>
-  </div>
-  <div class="vre-slot" data-slot="input-2">
-    <div class="slot-title">Input files B</div>
-    <div class="slot-hint">Drop files here</div>
-  </div>
-</div>
-    "#
-        ))
-    }
-}
-
-async fn preview_file(Query(params): Query<HashMap<String, String>>) -> Html<String> {
-    let download_url = params.get("url").unwrap();
-    let content = format!(
-        "// mock preview\n// filename: I'll streaming file to tmp from {download_url} and print it here,\n\n this is only for demo purpose, depend on the mime-type I use different EOSC builtin tools to open and preview the file\n\nfn main() {{\n    println!(\"hello\");\n}}"
-    );
-
-    let title = format!(
-        "on url: {}, with mime-type: {}",
-        download_url,
-        params.get("mimetype").unwrap_or(&"unknown".to_string())
-    );
-
-    // XXX: hx-on is not working.
-    Html(format!(
-        r#"
-<div id="file-preview" style="display:block;">
-  <div id="file-preview-header">
-    <span id="file-preview-title">{title}</span>
-    <button
-      hx-on:click="this.closest('#file-preview').style.display='none'">
-      ✖
-    </button>
-  </div>
-  <pre id="file-preview-content">{content}</pre>
-</div>
-"#,
-    ))
-}
-
-async fn download_file(Query(params): Query<HashMap<String, String>>) -> Response {
-    // Get the remote URL
-    let remote_url = match params.get("url") {
-        Some(url) => url,
-        None => return (axum::http::StatusCode::BAD_REQUEST, "Missing url").into_response(),
-    };
-
-    // Determine mimetype (optional, fallback to generic)
-    let mimetype = params
-        .get("mimetype")
-        .map(|s| s.as_str())
-        .unwrap_or("application/octet-stream");
-
-    // Fetch the remote file
-    dbg!(remote_url);
-    let resp = match reqwest::get(remote_url).await {
-        Ok(r) => r,
-        Err(_) => {
-            return (
-                axum::http::StatusCode::BAD_GATEWAY,
-                "Failed to fetch remote file",
-            )
-                .into_response()
-        }
-    };
-
-    // Map reqwest Bytes stream to Result<hyper::Chunk, std::io::Error>
-    let stream = resp.bytes_stream();
-    // TODO: this works well for small files, but not chunked if files are large, in EOSC, it is
-    // reasonable to make this assumption.
-    let body = axum::body::Body::from_stream(stream);
-
-    // Extract filename from URL
-    let filename = remote_url.split('/').next_back().unwrap_or("file.dat");
-
-    Response::builder()
-        .header(CONTENT_TYPE, mimetype)
-        .header(
-            CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", filename),
+impl CrawlFileExt for datahugger::Dataset {
+    fn crawl_file(
+        self,
+        client: &Client,
+        mp: impl ProgressManager,
+    ) -> BoxStream<'static, Result<FileEntry, Exn<CrawlerError>>> {
+        let root_dir = self.root_dir();
+        crawl(
+            client.clone(),
+            Arc::clone(&self.backend),
+            root_dir,
+            mp.clone(),
         )
-        .body(body)
-        .unwrap()
+        .filter_map(|res| async move {
+            match res {
+                Ok(Entry::Dir(_)) => None,
+                Ok(Entry::File(f)) => {
+                    let f: FileEntry = f.into();
+                    Some(Ok(f))
+                }
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .boxed()
+    }
 }
 
-#[derive(Serialize, Clone)]
-pub struct DatasetMeta {
-    uuid: Uuid,
-    source_url: String,
+#[derive(Clone)]
+struct NoProgress;
+
+impl ProgressManager for NoProgress {
+    fn insert(&self, _index: usize, _pb: ProgressBar) -> ProgressBar {
+        ProgressBar::hidden()
+    }
+
+    fn insert_from_back(&self, _index: usize, _pb: ProgressBar) -> ProgressBar {
+        ProgressBar::hidden()
+    }
+}
+
+#[async_trait::async_trait]
+impl DataSource for DatahuggerDataSource {
+    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<DatasetInfo> {
+        let url = uuid;
+        let info = DatasetInfo {
+            uuid: Uuid::new_v4(),
+            url: url.to_string(),
+            id: "dummy".to_string(),
+            description: "datahugger not yet support dataset metadata harvesting".to_string(),
+            total_files: None,
+            total_size_bytes: None,
+            created_at: None,
+            updated_at: None,
+            tags: HashMap::new(),
+        };
+        Ok(info)
+    }
+
+    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
+        let user_agent = format!(
+            "datahugger-over-eosc-coordinator/{}",
+            env!("CARGO_PKG_VERSION")
+        );
+        let client = ClientBuilder::new().user_agent(user_agent).build()?;
+        let mut url = uuid.to_string();
+        if url.starts_with("https://doi.org/") {
+            let doi = url.trim_start_matches("https://doi.org/");
+            url = resolve_doi_to_url(&client, doi, true)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        }
+        let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let mp = NoProgress;
+        let files = ds
+            .crawl_file(&client, mp)
+            // TODO: I need log on error cases on the server.
+            .filter_map(|f| async move { f.ok() })
+            .boxed();
+        Ok(files)
+    }
+}
+
+/// init with the root_api url, must be an valid url, to the version.
+/// A valid example is:
+/// http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/
+pub struct ToolRegistry {
+    root_api: Url,
+}
+
+impl ToolRegistry {
+    fn new(root_api: Url) -> Self {
+        ToolRegistry { root_api }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct Slot {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    slot_type: String,
+    // TODO: file_formats: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct OneToolResponse {
+    // XXX: @reggie, maybe this better to be some special string type id?
+    id: u64,
+    uri: String,
+    name: String,
     description: String,
+    types: Vec<String>,
+    version: String,
+    input_slots: Vec<Slot>,
 }
 
-fn compute_uuid_from_string(input: &str) -> Uuid {
-    Uuid::new_v5(&Uuid::NAMESPACE_URL, input.as_bytes())
+#[async_trait::async_trait]
+impl ToolSource for ToolRegistry {
+    async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
+        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
+        let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
+        tracing::info!("url: {}", url);
+        let resp = reqwest::get(url).await?;
+        let resp: Vec<OneToolResponse> = resp.json().await?;
+        // tracing::info!("resp is: {:?}", resp);
+        let tools = resp
+            .into_iter()
+            .map(|res| {
+                let slots = res
+                    .input_slots
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>();
+
+                ToolMeta {
+                    id: res.id.to_string(),
+                    version: res.version,
+                    uri: res.uri,
+                    types: res.types,
+                    name: res.name,
+                    description: res.description,
+                    slots,
+                }
+            })
+            .collect::<Vec<_>>();
+        return Ok(tools);
+    }
+
+    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
+        let url = format!("{}/tools/?name=?????", self.root_api.as_str());
+        tracing::info!("url: {}", url);
+        let resp = reqwest::get(url).await?;
+        let resp: Vec<OneToolResponse> = resp.json().await?;
+        // tracing::info!("resp is: {:?}", resp);
+        let tools = resp
+            .into_iter()
+            .map(|res| {
+                let slots = res
+                    .input_slots
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<_>>();
+
+                ToolMeta {
+                    id: res.id.to_string(),
+                    version: res.version,
+                    uri: res.uri,
+                    types: res.types,
+                    name: res.name,
+                    description: res.description,
+                    slots,
+                }
+            })
+            .collect::<Vec<_>>();
+        return Ok(tools);
+    }
+
+    async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
+        let url = format!("{}/tools/{}", self.root_api.as_str(), id);
+        let resp: OneToolResponse = reqwest::get(url).await?.json().await?;
+        let slots = resp
+            .input_slots
+            .into_iter()
+            .map(|s| s.name)
+            .collect::<Vec<_>>();
+
+        let tool = ToolMeta {
+            id: id.to_string(),
+            version: resp.version,
+            uri: resp.uri,
+            types: resp.types,
+            name: resp.name,
+            description: resp.description,
+            slots,
+        };
+        return Ok(tool);
+    }
 }
 
-async fn search_result() -> Html<String> {
-    // Mocked datasets similar to results returned from Dataverse / HAL / Zenodo
-    let ds_vec: Vec<&DatasetMeta> = DATASETS.values().collect();
-
-    let mut context = Context::new();
-    context.insert("datasets", &ds_vec);
-
-    let html = templates().render("index.html", &context).unwrap();
-    Html(html)
+struct MockDispatcher {
+    db: RwLock<HashMap<Uuid, TaskHandler>>,
 }
 
-#[derive(Serialize)]
-struct Dataset {
-    metadata: DatasetMeta,
+impl MockDispatcher {
+    fn new() -> Self {
+        Self {
+            db: RwLock::new(HashMap::new()),
+        }
+    }
 }
 
-async fn dataset(Path(uuid): Path<Uuid>) -> Html<String> {
-    let mut context = Context::new();
-    match get_dataset(&uuid) {
-        Some(ds) => {
-            let ds = Dataset {
-                metadata: ds.clone(),
+#[async_trait::async_trait]
+impl Dispatcher for MockDispatcher {
+    // // launch a vre with the launch request, return the callback url when it is ready
+    async fn launch(
+        &self,
+        uid: &str,
+        tool: &ToolMeta,
+        files: &HashMap<String, FileEntry>,
+    ) -> anyhow::Result<Uuid> {
+        // it also relates to the auth problem, who has the access to the vre? who should control
+        // the permission of vre. I think it should be the vre provider and somewhere there is a
+        // mapping for what eosc user can access which vres. Should this all kept in an auth server
+        // (assume it will be one), or dispatcher maintain the table and mapping??
+        // thus non-mock one should take care of auth here or somewhere in front
+
+        // in the mock, this will be just
+        // 1. have a in-memory db (mocked by HashMap) to record user and tools launched
+        // 2. return a dummy url to be printed in the UI frontend.
+
+        // should tool meta contain all info to let dispatcher know "how to launch a tool?"
+
+        // XXX: mock only the galaxy behavior, @reggie we need to find the pattern here to do the proper
+        // abstraction.
+        //
+        // POST https://usegalaxy.eu/api/workflow_landings
+        // ```json
+        // {
+        //   "public": false,
+        //   "workflow_id": "https://dockstore.org/api/ga4gh/trs/v2/tools/%23workflow%2Fgithub.com%2Flaitanawe%2Fismb2024%2Fgalaxy_example/versions/main/PLAIN_GALAXY/descriptor/Galaxy-Workflow-reverse_file_galaxy_workflow.ga", # trs is one of the ga4gh spec, defind the API, of it is a workflow or tool.
+        //   "workflow_target_type": "trs_url", # trs standard
+        //   "request_state": {
+        //     "simpletext_input": {
+        //       "class": "File",
+        //       "filetype": "txt",
+        //       "location": "https://example-files.online-convert.com/document/txt/example.txt"
+        //     }
+        //   }
+        // }
+        // ```
+        // HTTP 200
+        // [Asserts]
+        // jsonpath "$.uuid" exists
+        // [Captures]
+        // landing_uuid: jsonpath "$.uuid"
+        //
+        // return this url
+        // # GET https://usegalaxy.eu/workflow_landings/{{landing_uuid}}?public=false
+
+        // NOTE: @reggie, I want ToolMeta include info says "I am a tool need to use galaxy as VRE
+        // to launch me. Then in the realworld `launch` implementation it goes to dispatcher to
+        // launch the galaxy with the specific information attached."
+        //
+        // struct ToolMeta {
+        //     // id, version, name, description, slots are needed by the UI.
+        //     id: String,
+        //     version: String,
+        //     name: String,
+        //     description: String,
+        //
+        //     // XXX: !!! runtime is a VRE type which indicate how the tool need to be launched.
+        //     // not very clear how the VRE specific information passed to here, because different
+        //     // VRE has different information required, therefore the layout of input is dynamic.
+        //     // `workflow_id` and `trs_url` are such kinds of information.
+        //
+        //     runtime: RuntimeMeta,
+        // }
+        //
+        // struct RuntimeMeta {
+        //     kind: RuntimeKind, // this not dynamically support adding new runtime
+        //     config: serde_json::Value,
+        // }
+        //
+        // enum RuntimeKind {
+        //     Galaxy,
+        //     RRP,
+        //     VIP,
+        // }
+        //
+        // fun foo(tool: ToolMeta) {
+        //      match tool.runtime.kind {
+        //          RuntimeKind::Galaxy {
+        //              let cfg: GalaxyRuntime = serde_json::from_value(runtime.config)?;
+        //              ...
+        //          }
+        //      }
+        // }
+        //
+        // // json will be like
+        // // {
+        // //   "id": "toolid-706",
+        // //   "runtime": {
+        // //     "config": {
+        // //       "workflow_id": "xxx",
+        // //       "workflow_target_type": "trs_url",
+        // //       "request_state": {
+        // //         "simpletext_input": {
+        // //           "class": "File",
+        // //           "filetype": "txt",
+        // //           "location": "https://example-files.online-convert.com/document/txt/example.txt"
+        // //         }
+        // //       }
+        // //     }
+        // //   }
+        // // }
+        //
+        // proxy/plugin runs for every VRE in its own process and talk to dispatcher with a well
+        // defined protocol.
+
+        // TODO: tool slots type need to be validated here before send the final launch action.
+        // This can also happens in the frontend to prevent user pass the wrong type.
+        // libmagic (its ML support version) can be used to do file type validation beyond the
+        // extension.
+
+        // NOTE: the actual logic here should be:
+        // 1. check the tool type, if it is a) from workflowhub and b) galaxy tool
+        // 2. get the workflowhub ga4ph link.
+        // 3. assemble the payload
+        // 4. send the payload
+        //
+        // NOTE: There are two variable approaches:
+        // 1. tool meta contains only the vre id, the vre payload in assemble by the specific
+        //    service.
+        // 2. tool meta contains runtime type (id to identify the vre again), but contain the
+        //    config with known layout for VREs.
+        //
+        // jyu: approach (1) is more proper in production, but require dispatcher / or another
+        // component play the role as "VRE" registry.
+        //
+        #[derive(Deserialize)]
+        struct VersionResp {
+            id: String,
+            name: String,
+        }
+
+        if tool.types.contains(&"galaxy_workflow".to_string())
+            && tool.types.contains(&"workflowhub".to_string())
+        {
+            let client = reqwest::Client::new();
+            let workflow_id = tool.uri.split('/').next_back().unwrap();
+            // XXX: @reggie, I need to make an extra call to get the latest version id, because
+            // what stored in your tool registry response is the tag of the version.
+            let res = client
+                .get(format!(
+                    "https://workflowhub.eu/ga4gh/trs/v2/tools/{}/versions",
+                    workflow_id
+                ))
+                .send()
+                .await?;
+
+            let resp_versions: Vec<VersionResp> = res.json().await?;
+            // XXX: sehr ugly
+            let version = resp_versions
+                .into_iter()
+                .filter(|i| i.name == tool.version)
+                .map(|i| i.id)
+                .collect::<Vec<_>>();
+
+            // NOTE: only launch the latest version
+            // TODO: in tool registry, harvest all version and in matchmaker UI allow to select
+            // versions.
+            let workflow_id = format!(
+                "https://workflowhub.eu/ga4gh/trs/v2/tools/{}/versions/{}",
+                workflow_id, version[0],
+            );
+
+            let request_state: serde_json::Map<String, serde_json::Value> = files
+                .iter()
+                .filter_map(|(key, entry)| {
+                    let location = entry.download_url.as_deref()?;
+
+                    let filetype = entry.path.rsplit('.').next().unwrap_or("txt");
+
+                    Some((
+                        key.clone(),
+                        // @reggie galaxy specific info
+                        serde_json::json!({
+                            "class": "File",
+                            "filetype": filetype,
+                            "location": location
+                        }),
+                    ))
+                })
+                .collect();
+
+            let payload = serde_json::json!({
+                "public": false,
+                "workflow_id": workflow_id,
+                "workflow_target_type": "trs_url",
+                "request_state": request_state,
+            });
+
+            #[derive(serde::Deserialize)]
+            struct Response {
+                uuid: String,
+            }
+
+            // XXX: this is a blocking call, blocking call should not stay in async block.
+            // See if galaxy provide async call that return immediately with a handler to check the
+            // state.
+            let res = client
+                .post("https://usegalaxy.eu/api/workflow_landings")
+                .json(&payload)
+                .send()
+                .await?;
+
+            let data: Response = res.json().await.unwrap();
+            let landing_uuid = data.uuid;
+            let callback_url = Url::from_str(&format!(
+                "https://usegalaxy.eu/workflow_landings/{landing_uuid}?public=false"
+            ))
+            .expect("a valid url");
+
+            let id = uuid::Uuid::new_v4();
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
             };
-            context.insert("ds".to_string(), &ds);
-        }
-        None => {
-            return Html(format!("Dataset {} not found", uuid));
-        }
-    };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
 
-    let html = templates().render("dataset/index.html", &context).unwrap();
-    Html(html)
+            let mut db = self.db.write().await;
+            db.entry(id).or_insert(task_handler);
+
+            Ok(id)
+        } else {
+            panic!("unknown support VRE");
+        }
+    }
+
+    async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact> {
+        let db = self.db.read().await;
+        let hd = db.get(handler_id).unwrap();
+        let artifact = hd.artifact.clone();
+        Ok(artifact)
+    }
+
+    async fn query_tasks(&self, uid: &str) -> anyhow::Result<Vec<TaskHandler>> {
+        let db = self.db.read().await;
+        let out = db
+            .values()
+            .filter(|th| th.user_id.0 == uid)
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(out)
+    }
+
+    async fn get_state(&self, task_uuid: &Uuid) -> anyhow::Result<ToolState> {
+        let db = self.db.read().await;
+        let hd = db.get(task_uuid).unwrap();
+        let status = hd.state.clone();
+        Ok(status)
+    }
 }
 
-async fn find_tools(files: &[FileMeta]) -> Result<Vec<ToolMeta>, Box<dyn std::error::Error>> {
-    let token = create_token();
-    let meta_token: MetadataValue<_> = format!("Bearer {}", token).parse()?;
-
-    let channel = Channel::from_static("http://[::1]:50051").connect().await?;
-
-    let mut client =
-        ToolServiceClient::with_interceptor(channel.clone(), move |mut req: Request<()>| {
-            req.metadata_mut()
-                .insert("authorization", meta_token.clone());
-            Ok(req)
-        });
-    let request = tonic::Request::new(FindToolsRequest {
-        files: files.iter().map(|f| f.clone().into()).collect(),
-    });
-    let resp = client.find_tools(request).await?.into_inner();
-    let tools = resp.tools;
-
-    Ok(tools)
-}
-
-async fn vre_recommend_from_files(Form(form): Form<HashMap<String, String>>) -> Html<String> {
-    // XXX: mock behavior that:
-    // 1. one file select => vre1
-    // 2. two files select => vre2
-    // 3. else number of files select => vre2 + vre3
-    let file_list = if form.is_empty() {
-        "".to_string()
-    } else {
-        let files = form
-            .iter()
-            .enumerate()
-            .map(|(i, (f1, _))| format!("idx:{}, {}", i, f1))
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(" got files {}", files)
-    };
-
-    match form.len() {
-        0 => Html(format!(
-            r"
-          <h3>Recommonded VREs:</h3>
-          <div>
-            <p>{file_list}</p>
-            </br>
-            No file selected.
-          </div>
-    "
-        )),
-        1 => Html(format!(
-            r##"
-          <h3>Recommonded VREs:</h3>
-          <div>
-            <p>{file_list}</p>
-            </br>
-            <button onclick="console.log('vre 1 clicked')" type="button" hx-get="/vre/1" hx-target="#vre" hx-swap="innerHTML">vre 1</button>
-          </div>
-    "##
-        )),
-        2 => Html(format!(
-            r##"
-          <h3>Recommonded VREs:</h3>
-          <div>
-            <p>{file_list}</p>
-            </br>
-            <button onclick="console.log('vre 2 clicked')" type="button" hx-get="/vre/2" hx-target="#vre" hx-swap="innerHTML">vre 2</button>
-          </div>
-    "##
-        )),
-        _ => Html(format!(
-            r##"
-          <h3>Recommonded VREs:</h3>
-          <div>
-            <p>{file_list}</p>
-            </br>
-            <button onclick="console.log('vre 1 clicked')" type="button" hx-get="/vre/1" hx-target="#vre" hx-swap="innerHTML">vre 1</button>
-            <button onclick="console.log('vre 2 clicked')" type="button" hx-get="/vre/2" hx-target="#vre" hx-swap="innerHTML">vre 2</button>
-          </div>
-    "##
-        )),
+async fn report_service_status(reporter: HealthReporter) {
+    // TODO: the real report should report all sub-services by making health check to the source
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        reporter
+            .set_serving::<DataplayerServiceServer<Dataplayer>>()
+            .await;
     }
 }
 
 #[tokio::main]
-async fn main() {
-    let app = Router::new()
-        .nest_service("/assets", ServeDir::new("ui/assets"))
-        .route("/search-result", get(search_result))
-        .route("/", get(search_result))
-        .route("/datasets/{id}", get(dataset))
-        .route("/datasets/{id}/repo", get(inspect_dataset_repo))
-        .route("/repo-additional", get(repo_additional))
-        // preview with the download_url that `preview_file` can stream and read, with query passed
-        // in indicate which mime-type it is etc.
-        .route("/preview", get(preview_file))
-        .route("/download", get(download_file))
-        .route("/vre-recommend-from-files", post(vre_recommend_from_files))
-        .route("/vre/{id}", get(vre_with_id));
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (health_report, health_service) = tonic_health::server::health_reporter();
+    health_report
+        .set_serving::<DatasetServiceServer<Dataplayer>>()
+        .await;
+    health_report
+        .set_serving::<ToolServiceServer<ToolDatabase>>()
+        .await;
+    health_report
+        .set_serving::<DataplayerServiceServer<Dataplayer>>()
+        .await;
+    tokio::spawn(report_service_status(health_report.clone()));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    tracing_subscriber::fmt()
+        .with_env_filter("info") // filter logs by level
+        .init();
+
+    let addr = "[::1]:50051".parse()?;
+    // XXX: when new type/tool added, do I want to reload the packager in the memory?
+    // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
+    // (however there is not too much query needed, just index visiting).
+    // con: the packager need to be initialized, how freq it happens to take latest list?
+    //
+    let data_src = Arc::new(DatahuggerDataSource::new());
+    let data_relayer = DataRelayer::new(data_src);
+
+    let root_api = Url::from_str("http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1")
+        .expect("invalid url");
+    let tool_src = Arc::new(ToolRegistry::new(root_api));
+    let tool_src_cloned = Arc::clone(&tool_src);
+    let tool_srv = ToolDatabase::new(tool_src_cloned);
+
+    let dispatcher = Arc::new(MockDispatcher::new());
+    let tool_src_cloned = Arc::clone(&tool_src);
+    let data_player = Dataplayer::new(dispatcher, tool_src_cloned);
+
+    Server::builder()
+        .add_service(health_service)
+        .add_service(DatasetServiceServer::new(data_relayer))
+        .add_service(ToolServiceServer::new(tool_srv))
+        .add_service(DataplayerServiceServer::new(data_player))
+        .serve(addr)
+        .await?;
+    Ok(())
 }

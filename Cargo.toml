@@ -9,15 +9,7 @@ path = "src/server.rs"
 
 [[bin]]
 name = "rp-real"
-path = "src/server_real_datasrc.rs"
-
-# [[bin]]
-# name = "rp_client"
-# path = "src/client.rs"
-
-# [[bin]]
-# name = "ui"
-# path = "src/main.rs"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
