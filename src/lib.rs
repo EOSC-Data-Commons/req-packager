@@ -755,7 +755,7 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+            .map_err(|err| Status::internal(format!("not find tool, get_tool, {err}")))?;
         Ok(Response::new(ToolResponse {
             tool: Some(tool.into()),
         }))
@@ -765,7 +765,7 @@ impl ToolService for ToolDatabase {
         &self,
         req: Request<MatchToolsByDataRequest>,
     ) -> Result<Response<MatchToolsByDataResponse>, Status> {
-        tracing::info!("Got a request to query tools: {req:?}");
+        tracing::info!("Got a request to match tools: {req:?}");
         let req = req.get_ref();
         let files: Vec<FileEntry> = req
             .files
@@ -780,7 +780,7 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+            .map_err(|err| Status::internal(format!("not find tool, match_tools_by_data, {err}")))?;
         // tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
@@ -803,7 +803,9 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+            .map_err(|err| {
+                Status::internal(format!("not find tool, search_tools_by_text, {err}"))
+            })?;
         tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
@@ -859,7 +861,7 @@ impl From<grpc::ToolState> for ToolState {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeMeta {
-    kind: RuntimeKind, 
+    kind: RuntimeKind,
     config: serde_json::Value,
 }
 

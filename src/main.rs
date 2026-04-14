@@ -15,14 +15,14 @@ use req_packager::{
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
     TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tonic_health::server::HealthReporter;
 
 use reqwest::{Client, ClientBuilder};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
 use tonic::transport::Server;
 use url::Url;
 
@@ -191,13 +191,59 @@ impl ToolSource for ToolRegistry {
     }
 
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
-        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
-        let url = format!("{}/tools/?name=?????", self.root_api.as_str());
-        tracing::info!("url: {}", url);
-        let resp = reqwest::get(url).await?;
-        let resp: Vec<OneToolResponse> = resp.json().await?;
-        // tracing::info!("resp is: {:?}", resp);
-        let tools = resp
+        let client = reqwest::Client::new();
+
+        #[derive(Serialize, Debug)]
+        struct Input {
+            name: String,
+            mime_type: String,
+        }
+
+        #[derive(Serialize, Debug)]
+        struct Options {
+            operator: String,
+        }
+
+        #[derive(Serialize, Debug)]
+        struct Payload {
+            r#type: String,
+            inputs: Vec<Input>,
+            options: Options,
+        }
+
+        let inputs = files
+            .iter()
+            .map(|f| {
+                let name = PathBuf::from_str(&f.path).unwrap();
+                let name = name.file_name().unwrap().to_str().unwrap();
+                Input {
+                    name: name.to_string(),
+                    mime_type: f.mime_type.clone().unwrap(),
+                }
+            })
+            .collect();
+
+        let payload = Payload {
+            r#type: "file".to_string(),
+            inputs,
+            options: Options {
+                operator: "or".to_string(),
+            },
+        };
+
+        let url = format!("{}/tools/match", self.root_api.as_str());
+        let response = client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        let response: Vec<OneToolResponse> = response.json().await.inspect_err(|err| {
+            dbg!(err);
+        })?;
+        let tools = response
             .into_iter()
             .map(|res| {
                 let slots = res
