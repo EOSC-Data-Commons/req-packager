@@ -765,7 +765,7 @@ impl ToolService for ToolDatabase {
         &self,
         req: Request<MatchToolsByDataRequest>,
     ) -> Result<Response<MatchToolsByDataResponse>, Status> {
-        tracing::info!("Got a request to match tools: {req:?}");
+        // tracing::info!("Got a request to match tools: {req:?}");
         let req = req.get_ref();
         let files: Vec<FileEntry> = req
             .files

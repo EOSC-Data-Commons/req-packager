@@ -57,6 +57,7 @@ impl CrawlFileExt for datahugger::Dataset {
         )
         .filter_map(|res| async move {
             match res {
+                // TODO: need dir as well for the layout in the UI.
                 Ok(Entry::Dir(_)) => None,
                 Ok(Entry::File(f)) => {
                     let f: FileEntry = f.into();
