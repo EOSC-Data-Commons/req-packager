@@ -15,10 +15,13 @@ use req_packager::{
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
     TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
 };
+use reqwest::{
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
+    Client, ClientBuilder,
+};
 use serde::{Deserialize, Serialize};
 use tonic_health::server::HealthReporter;
 
-use reqwest::{Client, ClientBuilder};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -106,7 +109,25 @@ impl DataSource for DatahuggerDataSource {
             "datahugger-over-eosc-coordinator/{}",
             env!("CARGO_PKG_VERSION")
         );
-        let client = ClientBuilder::new().user_agent(user_agent).build()?;
+        let mut headers = HeaderMap::new();
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("token {token}"))?,
+            );
+        }
+        if let Ok(token) = std::env::var("DRYAD_API_TOKEN") {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}"))?,
+            );
+        }
+        headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent)?);
+        let client = ClientBuilder::new()
+            .user_agent(user_agent)
+            .default_headers(headers)
+            .use_native_tls()
+            .build()?;
         let mut url = uuid.to_string();
         if url.starts_with("https://doi.org/") {
             let doi = url.trim_start_matches("https://doi.org/");
@@ -219,7 +240,7 @@ impl ToolSource for ToolRegistry {
                 let name = name.file_name().unwrap().to_str().unwrap();
                 Input {
                     name: name.to_string(),
-                    mime_type: f.mime_type.clone().unwrap(),
+                    mime_type: f.mime_type.clone().unwrap_or("unknown".to_string()),
                 }
             })
             .collect();
@@ -242,7 +263,7 @@ impl ToolSource for ToolRegistry {
             .await?;
 
         let response: Vec<OneToolResponse> = response.json().await.inspect_err(|err| {
-            dbg!(err);
+            // dbg!(err);
         })?;
         let tools = response
             .into_iter()
