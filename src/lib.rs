@@ -780,7 +780,9 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, match_tools_by_data, {err}")))?;
+            .map_err(|err| {
+                Status::internal(format!("not find tool, match_tools_by_data, {err}"))
+            })?;
         // tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
@@ -871,6 +873,24 @@ pub enum RuntimeKind {
 }
 
 #[derive(Debug, Clone)]
+pub struct Slot {
+    pub id: String,
+    pub name: String,
+    // #[serde(rename = "type")]
+    // slot_type: String,
+    // TODO: file_formats: Vec<String>,
+}
+
+impl From<Slot> for grpc::Slot {
+    fn from(value: Slot) -> Self {
+        grpc::Slot {
+            id: value.id,
+            name: value.name,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ToolMeta {
     /// Id of EOSC tool, which is the id in the tool registry
     pub id: String,
@@ -879,7 +899,7 @@ pub struct ToolMeta {
     pub uri: String,
     pub types: Vec<String>,
     pub description: String,
-    pub slots: Vec<String>,
+    pub slots: Vec<Slot>,
     // pub runtime: RuntimeMeta,
 }
 
@@ -892,7 +912,7 @@ impl From<ToolMeta> for grpc::ToolMeta {
             version: value.version,
             name: value.name,
             description: value.description,
-            slots: value.slots,
+            slots: value.slots.into_iter().map(|s| s.into()).collect(),
         }
     }
 }

@@ -239,6 +239,13 @@ pub struct BrowseComplete {
 /// this is what response to client about the vre entity it can utilize.
 /// NOTE: @reggie here is what supposed to be stored in the registry.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Slot {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolMeta {
     /// id in the tool registry
     #[prost(string, tag = "1")]
@@ -249,8 +256,8 @@ pub struct ToolMeta {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub description: ::prost::alloc::string::String,
-    #[prost(string, repeated, tag = "5")]
-    pub slots: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "5")]
+    pub slots: ::prost::alloc::vec::Vec<Slot>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrowseToolsRequest {}
@@ -261,7 +268,7 @@ pub struct GetToolRequest {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolResponse {
     #[prost(message, optional, tag = "1")]
     pub tool: ::core::option::Option<ToolMeta>,

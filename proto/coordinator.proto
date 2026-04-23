@@ -151,13 +151,18 @@ message BrowseComplete {
 // -------------- Start of Tool Service --------------
 // this is what response to client about the vre entity it can utilize.
 // NOTE: @reggie here is what supposed to be stored in the registry.
+message Slot {
+  string id = 1;
+  string name = 2;
+}
+
 message ToolMeta {
   // id in the tool registry
   string id = 1;
   string version = 2;
   string name = 3;
   string description = 4;
-  repeated string slots = 5;
+  repeated Slot slots = 5;
 }
 
 message BrowseToolsRequest {}
