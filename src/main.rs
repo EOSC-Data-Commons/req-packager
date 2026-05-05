@@ -180,6 +180,7 @@ impl From<ResponseSlot> for Slot {
     fn from(value: ResponseSlot) -> Self {
         Slot {
             id: value.id,
+            slot_type: value.slot_type,
             name: value.name,
         }
     }

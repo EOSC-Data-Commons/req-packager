@@ -878,12 +878,18 @@ pub enum RuntimeKind {
     Galaxy,
 }
 
+// XXX: @reggie where do we need to make the slot type validated?
+// There are following places slot type is passed.
+// - type infos cleaned in tool-registry.
+// - returned from tool-registry response, can be "data_input", "file", "data_collection"...
+// - Here in the coordinator.
+// - In the matchmaker, it should showing different input text box for different types.
+// At the moment, I relay the string to UI.
 #[derive(Debug, Clone)]
 pub struct Slot {
     pub id: String,
     pub name: String,
-    // #[serde(rename = "type")]
-    // slot_type: String,
+    pub slot_type: String,
     // TODO: file_formats: Vec<String>,
 }
 
@@ -892,6 +898,7 @@ impl From<Slot> for grpc::Slot {
         grpc::Slot {
             id: value.id,
             name: value.name,
+            typ: value.slot_type,
         }
     }
 }

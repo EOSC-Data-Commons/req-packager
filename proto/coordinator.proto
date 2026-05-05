@@ -153,7 +153,8 @@ message BrowseComplete {
 // NOTE: @reggie here is what supposed to be stored in the registry.
 message Slot {
   string id = 1;
-  string name = 2;
+  string typ = 2;
+  string name = 3;
 }
 
 message ToolMeta {

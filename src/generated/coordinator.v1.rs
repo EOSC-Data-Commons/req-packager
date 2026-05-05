@@ -243,6 +243,8 @@ pub struct Slot {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
+    pub typ: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
     pub name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
