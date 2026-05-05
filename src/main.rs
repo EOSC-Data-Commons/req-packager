@@ -6,6 +6,7 @@ use datahugger::{
 use exn::Exn;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
+use hyper::header::CONTENT_TYPE;
 use indicatif::ProgressBar;
 use req_packager::{
     grpc::{
@@ -25,7 +26,12 @@ use tonic_health::server::HealthReporter;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 use tonic::transport::Server;
 use url::Url;
 
@@ -191,9 +197,45 @@ struct OneToolResponse {
     input_slots: Vec<ResponseSlot>,
 }
 
+static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
+    vec![
+        ToolMeta {
+            id: "::st:001".to_string(),
+            version: "v0".to_string(),
+            name: "mybinder".to_string(),
+            uri: "https://mybinder.org/".to_string(),
+            types: vec!["general_tool".to_string(), "mybinder".to_string()],
+            description: "mybinder as genenal tool".to_string(),
+            slots: vec![],
+        },
+        ToolMeta {
+            id: "::st:002".to_string(),
+            version: "v0".to_string(),
+            name: "Reproduciple Research Platform (RRP)".to_string(),
+            uri: "https://rrp-eosc.ethz.ch/".to_string(),
+            types: vec!["general_tool".to_string(), "rrp".to_string()],
+            description: "RRP as genenal tool".to_string(),
+            slots: vec![],
+        },
+        ToolMeta {
+            id: "::st:003".to_string(),
+            version: "v0".to_string(),
+            name: "CernBox".to_string(),
+            uri: "cernbox.cern.ch".to_string(),
+            types: vec!["general_tool".to_string(), "cernbox".to_string()],
+            description: "Tool to send files to CernBox user".to_string(),
+            slots: vec![],
+        },
+    ]
+});
+
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
+        if text.starts_with("::STATIC") {
+            let tools = &TOOLS;
+            return Ok(tools.to_vec());
+        }
         // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
         tracing::info!("url: {}", url);
@@ -300,6 +342,11 @@ impl ToolSource for ToolRegistry {
     }
 
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
+        if id.starts_with("::st") {
+            if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
+                return Ok(tool.to_owned());
+            }
+        }
         let url = format!("{}/tools/{}", self.root_api.as_str(), id);
         let resp: OneToolResponse = reqwest::get(url).await?.json().await?;
         let slots = resp
@@ -340,6 +387,7 @@ impl Dispatcher for MockDispatcher {
         &self,
         uid: &str,
         tool: &ToolMeta,
+        dataset: &str,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
@@ -570,10 +618,7 @@ impl Dispatcher for MockDispatcher {
             // and the id is also used in VIP job as the id in the job name.
             let task_id = uuid::Uuid::new_v4();
 
-            let user_agent = format!(
-                "datahugger-over-eosc-coordinator/{}",
-                env!("CARGO_PKG_VERSION")
-            );
+            let user_agent = format!("eosc-coordinator/{}", env!("CARGO_PKG_VERSION"));
             let mut headers = HeaderMap::new();
             if let Ok(key) = std::env::var("VIP_API_KEY") {
                 headers.insert("apikey", HeaderValue::from_str(&key.to_string())?);
@@ -669,9 +714,130 @@ impl Dispatcher for MockDispatcher {
 
             Ok(task_id)
         } else if tool.types.contains(&"mybinder".to_string()) {
-            todo!()
+            let task_id = uuid::Uuid::new_v4();
+            // TODO: need to use the helper function I provide in datahugger to get the branch or
+            // commit number.
+            let callback_url = Url::from_str("https://mybinder.org/v2/gh/binder-examples/r/main")
+                .expect("a valid url");
+
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
         } else if tool.types.contains(&"cernbox".to_string()) {
             todo!()
+        } else if tool.types.contains(&"rrp".to_string()) {
+            let task_id = uuid::Uuid::new_v4();
+
+            let backend_url = "https://rrp-eosc.ethz.ch";
+
+            let client = Client::builder().build()?;
+
+            // ---- CREATE PROJECT ----
+            let project_data = serde_json::json!({
+                "type": "createFromExternalCatalog",
+                // TODO: image should be able to be set from slot
+                "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "environmentType": "jupyterlab",
+            });
+
+            let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
+                panic!("oidc_agent_token not found in env var")
+            };
+            let resp = client
+                .post(format!("{}/api/projects", backend_url))
+                .bearer_auth(oidc_agent_token)
+                .json(&project_data)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let artifact = Artifact::FailedTool;
+                // TODO: use TaskHandler::new()
+                let task_handler = TaskHandler {
+                    id: HandlerId(task_id),
+                    user_id: UserId(uid.to_string()),
+                    state: ToolState::Exception,
+                    artifact,
+                };
+
+                let mut db = self.db.write().await;
+                db.entry(task_id).or_insert(task_handler);
+
+                return Ok(task_id);
+            }
+
+            tracing::info!("Create project: {}", resp.status());
+
+            let location = resp.headers().get("Location").and_then(|v| v.to_str().ok());
+
+            let project_code = location
+                .and_then(|loc| loc.split('/').next_back())
+                .expect("project id not there");
+
+            tracing::info!("Project code: {}", project_code);
+
+            let callback_url = Url::from_str(&format!("{}/projects/{}", backend_url, project_code))
+                .expect("valid url");
+            tracing::info!("Callback URL: {}", callback_url);
+
+            // XXX: get status should be moved to monitor_state.
+            // the state monitor is a dummy one that directly send Ready signal.
+            // It should be send a stream with updating states.
+            //
+            // // ---- GET STATUS ----
+            // let resp = client
+            //     .get(format!("{}/api/projects/{}", backend_url, project_code))
+            //     .send()
+            //     .await?;
+            //
+            // tracing::info!("Status: {}", resp.status());
+            // let json: serde_json::Value = resp.json().await?;
+            //
+            // tracing::debug!("Body: {}", json);
+            
+            // // ---- START PROJECT ----
+            // let start_req = serde_json::json!({
+            //     "type": "start",
+            //     "remote": false,
+            // });
+            //
+            // let resp = client
+            //     .post(format!("{}/api/projects/{}", backend_url, project_code))
+            //     .headers(headers)
+            //     .json(&start_req)
+            //     .send()
+            //     .await?;
+            //
+            // println!("Start: {}", resp.status());
+
+            ///// -----------
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
         } else {
             panic!("unknown support VRE");
         }

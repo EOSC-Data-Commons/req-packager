@@ -142,6 +142,7 @@ impl Dispatcher for MockDispatcher {
         &self,
         uid: &str,
         tool: &ToolMeta,
+        dataset: &str,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control

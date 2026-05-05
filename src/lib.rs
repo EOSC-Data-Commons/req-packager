@@ -38,11 +38,11 @@ use uuid::Uuid;
 use crate::grpc::{
     dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
     tool_service_server::ToolService, tool_state, BrowseDatasetByUrlRequest, BrowseToolsRequest,
-    BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, GetArtifactRequest,
-    GetArtifactResponse, GetStateRequest, GetStateResponse, GetToolRequest, HostedTool,
-    LaunchToolRequest, LaunchToolResponse, MatchToolsByDataRequest, MatchToolsByDataResponse,
-    MonitorStateRequest, MonitorStateResponse, QueryUserRequest, QueryUserResponse,
-    SearchToolsByTextRequest, SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
+    BrowseToolsResponse, DropRequest, DropResponse, GetArtifactRequest, GetArtifactResponse,
+    GetStateRequest, GetStateResponse, GetToolRequest, LaunchToolRequest, LaunchToolResponse,
+    MatchToolsByDataRequest, MatchToolsByDataResponse, MonitorStateRequest, MonitorStateResponse,
+    QueryUserRequest, QueryUserResponse, SearchToolsByTextRequest, SearchToolsByTextResponse,
+    ToolResponse, ToolTaskHandler,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -830,6 +830,7 @@ pub enum ToolState {
     Preparing,
     Ready,
     Dropped,
+    Exception,
 }
 
 impl From<ToolState> for grpc::ToolState {
@@ -842,6 +843,10 @@ impl From<ToolState> for grpc::ToolState {
             ToolState::Preparing => grpc::ToolState {
                 log: "preparing".to_string(),
                 state: tool_state::State::Preparing.into(),
+            },
+            ToolState::Exception => grpc::ToolState {
+                log: "exception".to_string(),
+                state: tool_state::State::Exception.into(),
             },
             ToolState::Dropped => grpc::ToolState {
                 log: "preparing".to_string(),
@@ -857,6 +862,7 @@ impl From<grpc::ToolState> for ToolState {
             tool_state::State::Preparing => ToolState::Preparing,
             tool_state::State::Ready => ToolState::Ready,
             tool_state::State::Dropped => ToolState::Dropped,
+            tool_state::State::Exception => ToolState::Exception,
         }
     }
 }
@@ -964,6 +970,7 @@ pub trait Dispatcher: Send + Sync + 'static {
         &self,
         uid: &str,
         tool: &ToolMeta,
+        dataset: &str,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid>;
     async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact>;
@@ -994,6 +1001,7 @@ impl Dataplayer {
 pub enum Artifact {
     HostedTool { callback: Url },
     EoscInlineTool { callback: Url },
+    FailedTool,
 }
 
 fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
@@ -1063,10 +1071,11 @@ impl DataplayerService for Dataplayer {
             .collect();
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
+        let dataset = &req.dataset;
 
         let task_id = self
             .dispatcher
-            .launch(&user, &tool_meta, slots_mapping)
+            .launch(&user, &tool_meta, dataset, slots_mapping)
             .await
             .unwrap();
 
@@ -1111,6 +1120,10 @@ impl DataplayerService for Dataplayer {
                     callback_url: callback.to_string(),
                 };
                 EntryPoint::EoscInline(hosted_tool)
+            }
+            Artifact::FailedTool => {
+                let failed_tool = grpc::FailedTool {};
+                EntryPoint::Failed(failed_tool)
             }
         };
 
