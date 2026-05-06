@@ -14,7 +14,7 @@ use req_packager::{
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
-    Slot, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
+    Slot, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId, Value,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -216,7 +216,11 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             uri: "https://rrp-eosc.ethz.ch/".to_string(),
             types: vec!["general_tool".to_string(), "rrp".to_string()],
             description: "RRP as genenal tool".to_string(),
-            slots: vec![],
+            slots: vec![Slot {
+                id: "image_name".to_string(),
+                name: "Image Name".to_string(),
+                slot_type: "string".to_string(),
+            }],
         },
         ToolMeta {
             id: "::st:003".to_string(),
@@ -389,6 +393,7 @@ impl Dispatcher for MockDispatcher {
         uid: &str,
         tool: &ToolMeta,
         dataset: &str,
+        parameters: &HashMap<String, Value>,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
@@ -744,12 +749,20 @@ impl Dispatcher for MockDispatcher {
             let backend_url = "https://rrp-eosc.ethz.ch";
 
             let client = Client::builder().build()?;
+            let Some(image_name) = parameters.get("Image Name").map(|v| {
+                let serde_json::Value::String(v) = v.get_inner() else {
+                    unreachable!("must be a string")
+                };
+                v
+            }) else {
+                unreachable!("'Image Name' must be set")
+            };
 
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({
                 "type": "createFromExternalCatalog",
-                // TODO: image should be able to be set from slot
-                "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "image": image_name,
+                // "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
                 "environmentType": "jupyterlab",
             });
 
@@ -764,6 +777,7 @@ impl Dispatcher for MockDispatcher {
                 .await?;
 
             if !resp.status().is_success() {
+                dbg!("fail here");
                 let artifact = Artifact::FailedTool;
                 // TODO: use TaskHandler::new()
                 let task_handler = TaskHandler {
@@ -778,6 +792,7 @@ impl Dispatcher for MockDispatcher {
 
                 return Ok(task_id);
             }
+            dbg!("go here");
 
             tracing::info!("Create project: {}", resp.status());
 
@@ -807,7 +822,7 @@ impl Dispatcher for MockDispatcher {
             // let json: serde_json::Value = resp.json().await?;
             //
             // tracing::debug!("Body: {}", json);
-            
+
             // // ---- START PROJECT ----
             // let start_req = serde_json::json!({
             //     "type": "start",

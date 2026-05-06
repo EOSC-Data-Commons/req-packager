@@ -3,16 +3,9 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    grpc::{
-        self,
-        dataplayer_service_server::DataplayerServiceServer,
-        dataset_service_server::DatasetServiceServer,
-        tool_service_server::{ToolService, ToolServiceServer},
-        tool_state, ToolTaskHandler,
-    },
-    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, DispatcherClient,
-    FileEntry, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta,
-    ToolRegistryClient, ToolSource, ToolState, UserId,
+    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, Value, grpc::{
+        self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
+    }
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -143,6 +136,7 @@ impl Dispatcher for MockDispatcher {
         uid: &str,
         tool: &ToolMeta,
         dataset: &str,
+        parameters: &HashMap<String, Value>,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control

@@ -351,6 +351,24 @@ pub mod tool_state {
         }
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TypedValue {
+    #[prost(oneof = "typed_value::Kind", tags = "1, 2, 3")]
+    pub kind: ::core::option::Option<typed_value::Kind>,
+}
+/// Nested message and enum types in `TypedValue`.
+pub mod typed_value {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(string, tag = "1")]
+        StringValue(::prost::alloc::string::String),
+        /// TODO: distinguish int and double
+        #[prost(double, tag = "2")]
+        NumberValue(f64),
+        #[prost(bool, tag = "3")]
+        BoolValue(bool),
+    }
+}
 /// XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
 /// But in fact, some tool need config files that is independent of data files passed in.
 /// We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool.
@@ -364,7 +382,12 @@ pub struct LaunchToolRequest {
     #[prost(string, tag = "2")]
     pub dataset: ::prost::alloc::string::String,
     #[prost(map = "string, message", tag = "3")]
-    pub slots_mapping: ::std::collections::HashMap<
+    pub value_slots_mapping: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        TypedValue,
+    >,
+    #[prost(map = "string, message", tag = "4")]
+    pub file_slots_mapping: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         FileEntry,
     >,

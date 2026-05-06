@@ -968,6 +968,38 @@ impl From<TaskHandler> for ToolTaskHandler {
     }
 }
 
+#[derive(Debug)]
+pub struct Value {
+    inner: serde_json::Value,
+}
+
+impl Value {
+    pub fn get_inner(&self) -> serde_json::Value {
+        self.inner.clone()
+    }
+}
+
+impl From<grpc::TypedValue> for Value {
+    fn from(value: grpc::TypedValue) -> Self {
+        match value.kind {
+            Some(kind) => match kind {
+                grpc::typed_value::Kind::StringValue(v) => Self {
+                    inner: serde_json::Value::String(v),
+                },
+                grpc::typed_value::Kind::NumberValue(v) => Self {
+                    inner: serde_json::Number::from_f64(v)
+                        .map(serde_json::Value::Number)
+                        .expect("Invalid float for JSON (NaN or Infinity)"),
+                },
+                grpc::typed_value::Kind::BoolValue(v) => Self {
+                    inner: serde_json::Value::Bool(v),
+                },
+            },
+            None => panic!("TypedValue.kind is None"),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync + 'static {
     // TODO: for all types involved in the inner traits, should use mirror type of grpc type
@@ -978,6 +1010,7 @@ pub trait Dispatcher: Send + Sync + 'static {
         uid: &str,
         tool: &ToolMeta,
         dataset: &str,
+        parameters: &HashMap<String, Value>,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid>;
     async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact>;
@@ -1070,8 +1103,15 @@ impl DataplayerService for Dataplayer {
         let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
-        let slots_mapping = &req
-            .slots_mapping
+        let file_slots_mapping = &req
+            .file_slots_mapping
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+
+        let value_slots_mapping = &req
+            .value_slots_mapping
             .clone()
             .into_iter()
             .map(|(k, v)| (k, v.into()))
@@ -1082,7 +1122,13 @@ impl DataplayerService for Dataplayer {
 
         let task_id = self
             .dispatcher
-            .launch(&user, &tool_meta, dataset, slots_mapping)
+            .launch(
+                &user,
+                &tool_meta,
+                dataset,
+                value_slots_mapping,
+                file_slots_mapping,
+            )
             .await
             .unwrap();
 

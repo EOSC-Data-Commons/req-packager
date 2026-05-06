@@ -229,6 +229,15 @@ message ToolState {
   State state = 2;
 }
 
+message TypedValue {
+  oneof kind {
+    string string_value = 1;
+    // TODO: distinguish int and double
+    double number_value = 2;
+    bool bool_value = 3;
+  }
+}
+
 // XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
 // But in fact, some tool need config files that is independent of data files passed in.
 // We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool. 
@@ -238,7 +247,8 @@ message ToolState {
 message LaunchToolRequest {
   string tool_id = 1;
   string dataset = 2;
-  map<string, FileEntry> slots_mapping = 3;
+  map<string, TypedValue> value_slots_mapping = 3;
+  map<string, FileEntry> file_slots_mapping = 4;
 }
 
 message UserId {
