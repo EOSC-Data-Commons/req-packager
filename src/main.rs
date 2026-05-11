@@ -21,6 +21,7 @@ use reqwest::{
     Client, ClientBuilder,
 };
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use tonic_health::server::HealthReporter;
 
 use tokio::sync::RwLock;
@@ -34,14 +35,6 @@ use std::{
 };
 use tonic::transport::Server;
 use url::Url;
-
-struct DatahuggerDataSource;
-
-impl DatahuggerDataSource {
-    fn new() -> Self {
-        DatahuggerDataSource
-    }
-}
 
 trait CrawlFileExt {
     fn crawl_file(
@@ -91,6 +84,15 @@ impl ProgressManager for NoProgress {
         ProgressBar::hidden()
     }
 }
+
+struct DatahuggerDataSource;
+
+impl DatahuggerDataSource {
+    fn new() -> Self {
+        DatahuggerDataSource
+    }
+}
+
 
 #[async_trait::async_trait]
 impl DataSource for DatahuggerDataSource {
@@ -151,6 +153,95 @@ impl DataSource for DatahuggerDataSource {
         Ok(files)
     }
 }
+
+struct FileMetrixAsDataSource {
+    pool_dataset: PgPool,
+    pool_filedb: PgPool,
+}
+
+impl FileMetrixAsDataSource {
+    fn new(pool_dataset: PgPool, pool_filedb: PgPool) -> Self {
+        FileMetrixAsDataSource {
+            pool_dataset,
+            pool_filedb,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DataSource for FileMetrixAsDataSource {
+    async fn get_dataset_info(&self, uuid: &str) -> anyhow::Result<DatasetInfo> {
+        let url = uuid;
+        let info = DatasetInfo {
+            uuid: Uuid::new_v4(),
+            url: url.to_string(),
+            id: "dummy".to_string(),
+            description: "datahugger not yet support dataset metadata harvesting".to_string(),
+            total_files: None,
+            total_size_bytes: None,
+            created_at: None,
+            updated_at: None,
+            tags: HashMap::new(),
+        };
+
+        // let info: (i64,) = sqlx::query_as("SELECT $1")
+        //     .bind(150_i64)
+        //     .fetch_one(&self.pool_dataset)
+        //     .await?;
+        Ok(info)
+    }
+
+    async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
+        // let user_agent = format!(
+        //     "datahugger-over-eosc-coordinator/{}",
+        //     env!("CARGO_PKG_VERSION")
+        // );
+        // let mut headers = HeaderMap::new();
+        // if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        //     headers.insert(
+        //         AUTHORIZATION,
+        //         HeaderValue::from_str(&format!("token {token}"))?,
+        //     );
+        // }
+        // if let Ok(token) = std::env::var("DRYAD_API_TOKEN") {
+        //     headers.insert(
+        //         AUTHORIZATION,
+        //         HeaderValue::from_str(&format!("Bearer {token}"))?,
+        //     );
+        // }
+        // headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent)?);
+        // let client = ClientBuilder::new()
+        //     .user_agent(user_agent)
+        //     .default_headers(headers)
+        //     .use_native_tls()
+        //     .build()?;
+        // let mut url = uuid.to_string();
+        // if url.starts_with("https://doi.org/") {
+        //     let doi = url.trim_start_matches("https://doi.org/");
+        //     url = resolve_doi_to_url(&client, doi, true)
+        //         .await
+        //         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        // }
+        // let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        // let mp = NoProgress;
+        // let files = ds
+        //     .crawl_file(&client, mp)
+        //     // TODO: I need log on error cases on the server.
+        //     .filter_map(|f| async move { f.ok() })
+        //     .boxed();
+        // Ok(files)
+        //
+        // let info: (i64,) = sqlx::query_as("SELECT $1")
+        //     .bind(150_i64)
+        //     .fetch_one(&self.pool_filedb)
+        //     .await?;
+        let files = vec![];
+        let files = futures::stream::iter(files);
+
+        Ok(Box::pin(files))
+    }
+}
+
 
 /// init with the root_api url, must be an valid url, to the version.
 /// A valid example is:
