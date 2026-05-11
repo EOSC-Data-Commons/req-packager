@@ -38,11 +38,11 @@ use uuid::Uuid;
 use crate::grpc::{
     dataplayer_service_server::DataplayerService, get_artifact_response::EntryPoint,
     tool_service_server::ToolService, tool_state, BrowseDatasetByUrlRequest, BrowseToolsRequest,
-    BrowseToolsResponse, DropRequest, DropResponse, EoscInlineTool, GetArtifactRequest,
-    GetArtifactResponse, GetStateRequest, GetStateResponse, GetToolRequest, HostedTool,
-    LaunchToolRequest, LaunchToolResponse, MatchToolsByDataRequest, MatchToolsByDataResponse,
-    MonitorStateRequest, MonitorStateResponse, QueryUserRequest, QueryUserResponse,
-    SearchToolsByTextRequest, SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
+    BrowseToolsResponse, DropRequest, DropResponse, GetArtifactRequest, GetArtifactResponse,
+    GetStateRequest, GetStateResponse, GetToolRequest, LaunchToolRequest, LaunchToolResponse,
+    MatchToolsByDataRequest, MatchToolsByDataResponse, MonitorStateRequest, MonitorStateResponse,
+    QueryUserRequest, QueryUserResponse, SearchToolsByTextRequest, SearchToolsByTextResponse,
+    ToolResponse, ToolTaskHandler,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -755,7 +755,7 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+            .map_err(|err| Status::internal(format!("not find tool, get_tool, {err}")))?;
         Ok(Response::new(ToolResponse {
             tool: Some(tool.into()),
         }))
@@ -765,7 +765,7 @@ impl ToolService for ToolDatabase {
         &self,
         req: Request<MatchToolsByDataRequest>,
     ) -> Result<Response<MatchToolsByDataResponse>, Status> {
-        tracing::info!("Got a request to query tools: {req:?}");
+        // tracing::info!("Got a request to match tools: {req:?}");
         let req = req.get_ref();
         let files: Vec<FileEntry> = req
             .files
@@ -780,7 +780,9 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+            .map_err(|err| {
+                Status::internal(format!("not find tool, match_tools_by_data, {err}"))
+            })?;
         // tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
@@ -803,7 +805,9 @@ impl ToolService for ToolDatabase {
             .await
             // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, {err}")))?;
+            .map_err(|err| {
+                Status::internal(format!("not find tool, search_tools_by_text, {err}"))
+            })?;
         tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
@@ -826,6 +830,7 @@ pub enum ToolState {
     Preparing,
     Ready,
     Dropped,
+    Exception,
 }
 
 impl From<ToolState> for grpc::ToolState {
@@ -838,6 +843,10 @@ impl From<ToolState> for grpc::ToolState {
             ToolState::Preparing => grpc::ToolState {
                 log: "preparing".to_string(),
                 state: tool_state::State::Preparing.into(),
+            },
+            ToolState::Exception => grpc::ToolState {
+                log: "exception".to_string(),
+                state: tool_state::State::Exception.into(),
             },
             ToolState::Dropped => grpc::ToolState {
                 log: "preparing".to_string(),
@@ -853,19 +862,45 @@ impl From<grpc::ToolState> for ToolState {
             tool_state::State::Preparing => ToolState::Preparing,
             tool_state::State::Ready => ToolState::Ready,
             tool_state::State::Dropped => ToolState::Dropped,
+            tool_state::State::Exception => ToolState::Exception,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct RuntimeMeta {
-    kind: RuntimeKind, 
+    kind: RuntimeKind,
     config: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
 pub enum RuntimeKind {
     Galaxy,
+}
+
+// XXX: @reggie where do we need to make the slot type validated?
+// There are following places slot type is passed.
+// - type infos cleaned in tool-registry.
+// - returned from tool-registry response, can be "data_input", "file", "data_collection"...
+// - Here in the coordinator.
+// - In the matchmaker, it should showing different input text box for different types.
+// At the moment, I relay the string to UI.
+#[derive(Debug, Clone)]
+pub struct Slot {
+    pub id: String,
+    pub name: String,
+    pub slot_type: String,
+    // TODO: file_formats: Vec<String>,
+}
+
+impl From<Slot> for grpc::Slot {
+    fn from(value: Slot) -> Self {
+        grpc::Slot {
+            id: value.id,
+            name: value.name,
+            typ: value.slot_type,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -877,7 +912,7 @@ pub struct ToolMeta {
     pub uri: String,
     pub types: Vec<String>,
     pub description: String,
-    pub slots: Vec<String>,
+    pub slots: Vec<Slot>,
     // pub runtime: RuntimeMeta,
 }
 
@@ -890,7 +925,7 @@ impl From<ToolMeta> for grpc::ToolMeta {
             version: value.version,
             name: value.name,
             description: value.description,
-            slots: value.slots,
+            slots: value.slots.into_iter().map(|s| s.into()).collect(),
         }
     }
 }
@@ -933,6 +968,38 @@ impl From<TaskHandler> for ToolTaskHandler {
     }
 }
 
+#[derive(Debug)]
+pub struct Value {
+    inner: serde_json::Value,
+}
+
+impl Value {
+    pub fn get_inner(&self) -> serde_json::Value {
+        self.inner.clone()
+    }
+}
+
+impl From<grpc::TypedValue> for Value {
+    fn from(value: grpc::TypedValue) -> Self {
+        match value.kind {
+            Some(kind) => match kind {
+                grpc::typed_value::Kind::StringValue(v) => Self {
+                    inner: serde_json::Value::String(v),
+                },
+                grpc::typed_value::Kind::NumberValue(v) => Self {
+                    inner: serde_json::Number::from_f64(v)
+                        .map(serde_json::Value::Number)
+                        .expect("Invalid float for JSON (NaN or Infinity)"),
+                },
+                grpc::typed_value::Kind::BoolValue(v) => Self {
+                    inner: serde_json::Value::Bool(v),
+                },
+            },
+            None => panic!("TypedValue.kind is None"),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync + 'static {
     // TODO: for all types involved in the inner traits, should use mirror type of grpc type
@@ -942,6 +1009,8 @@ pub trait Dispatcher: Send + Sync + 'static {
         &self,
         uid: &str,
         tool: &ToolMeta,
+        dataset: &str,
+        parameters: &HashMap<String, Value>,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid>;
     async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact>;
@@ -972,6 +1041,7 @@ impl Dataplayer {
 pub enum Artifact {
     HostedTool { callback: Url },
     EoscInlineTool { callback: Url },
+    FailedTool,
 }
 
 fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
@@ -1033,18 +1103,32 @@ impl DataplayerService for Dataplayer {
         let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
-        let slots_mapping = &req
-            .slots_mapping
+        let file_slots_mapping = &req
+            .file_slots_mapping
+            .clone()
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+
+        let value_slots_mapping = &req
+            .value_slots_mapping
             .clone()
             .into_iter()
             .map(|(k, v)| (k, v.into()))
             .collect();
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
+        let dataset = &req.dataset;
 
         let task_id = self
             .dispatcher
-            .launch(&user, &tool_meta, slots_mapping)
+            .launch(
+                &user,
+                &tool_meta,
+                dataset,
+                value_slots_mapping,
+                file_slots_mapping,
+            )
             .await
             .unwrap();
 
@@ -1089,6 +1173,10 @@ impl DataplayerService for Dataplayer {
                     callback_url: callback.to_string(),
                 };
                 EntryPoint::EoscInline(hosted_tool)
+            }
+            Artifact::FailedTool => {
+                let failed_tool = grpc::FailedTool {};
+                EntryPoint::Failed(failed_tool)
             }
         };
 

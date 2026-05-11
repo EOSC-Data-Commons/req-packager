@@ -6,6 +6,7 @@ use datahugger::{
 use exn::Exn;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
+use hyper::header::CONTENT_TYPE;
 use indicatif::ProgressBar;
 use req_packager::{
     grpc::{
@@ -13,16 +14,24 @@ use req_packager::{
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
-    TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId,
+    Slot, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId, Value,
 };
-use serde::Deserialize;
+use reqwest::{
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
+    Client, ClientBuilder,
+};
+use serde::{Deserialize, Serialize};
 use tonic_health::server::HealthReporter;
 
-use reqwest::{Client, ClientBuilder};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+};
 use tonic::transport::Server;
 use url::Url;
 
@@ -57,6 +66,7 @@ impl CrawlFileExt for datahugger::Dataset {
         )
         .filter_map(|res| async move {
             match res {
+                // TODO: need dir as well for the layout in the UI.
                 Ok(Entry::Dir(_)) => None,
                 Ok(Entry::File(f)) => {
                     let f: FileEntry = f.into();
@@ -105,7 +115,25 @@ impl DataSource for DatahuggerDataSource {
             "datahugger-over-eosc-coordinator/{}",
             env!("CARGO_PKG_VERSION")
         );
-        let client = ClientBuilder::new().user_agent(user_agent).build()?;
+        let mut headers = HeaderMap::new();
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("token {token}"))?,
+            );
+        }
+        if let Ok(token) = std::env::var("DRYAD_API_TOKEN") {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}"))?,
+            );
+        }
+        headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent)?);
+        let client = ClientBuilder::new()
+            .user_agent(user_agent)
+            .default_headers(headers)
+            .use_native_tls()
+            .build()?;
         let mut url = uuid.to_string();
         if url.starts_with("https://doi.org/") {
             let doi = url.trim_start_matches("https://doi.org/");
@@ -137,13 +165,25 @@ impl ToolRegistry {
     }
 }
 
+// This is the type for the obj get from tool registry.
+// Need to map to the Slot of inner representation.
 #[derive(Deserialize, Debug)]
-struct Slot {
+struct ResponseSlot {
     id: String,
     name: String,
     #[serde(rename = "type")]
     slot_type: String,
     // TODO: file_formats: Vec<String>,
+}
+
+impl From<ResponseSlot> for Slot {
+    fn from(value: ResponseSlot) -> Self {
+        Slot {
+            id: value.id,
+            slot_type: value.slot_type,
+            name: value.name,
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -155,12 +195,52 @@ struct OneToolResponse {
     description: String,
     types: Vec<String>,
     version: String,
-    input_slots: Vec<Slot>,
+    input_slots: Vec<ResponseSlot>,
 }
+
+static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
+    vec![
+        ToolMeta {
+            id: "::st:001".to_string(),
+            version: "v0".to_string(),
+            name: "mybinder".to_string(),
+            uri: "https://mybinder.org/".to_string(),
+            types: vec!["general_tool".to_string(), "mybinder".to_string()],
+            description: "mybinder as genenal tool".to_string(),
+            slots: vec![],
+        },
+        ToolMeta {
+            id: "::st:002".to_string(),
+            version: "v0".to_string(),
+            name: "Reproduciple Research Platform (RRP)".to_string(),
+            uri: "https://rrp-eosc.ethz.ch/".to_string(),
+            types: vec!["general_tool".to_string(), "rrp".to_string()],
+            description: "RRP as genenal tool".to_string(),
+            slots: vec![Slot {
+                id: "image_name".to_string(),
+                name: "Image Name".to_string(),
+                slot_type: "string".to_string(),
+            }],
+        },
+        ToolMeta {
+            id: "::st:003".to_string(),
+            version: "v0".to_string(),
+            name: "CernBox".to_string(),
+            uri: "cernbox.cern.ch".to_string(),
+            types: vec!["general_tool".to_string(), "cernbox".to_string()],
+            description: "Tool to send files to CernBox user".to_string(),
+            slots: vec![],
+        },
+    ]
+});
 
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
+        if text.starts_with("::STATIC") {
+            let tools = &TOOLS;
+            return Ok(tools.to_vec());
+        }
         // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
         tracing::info!("url: {}", url);
@@ -173,7 +253,7 @@ impl ToolSource for ToolRegistry {
                 let slots = res
                     .input_slots
                     .into_iter()
-                    .map(|s| s.name)
+                    .map(|s| s.into())
                     .collect::<Vec<_>>();
 
                 ToolMeta {
@@ -191,19 +271,65 @@ impl ToolSource for ToolRegistry {
     }
 
     async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
-        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
-        let url = format!("{}/tools/?name=?????", self.root_api.as_str());
-        tracing::info!("url: {}", url);
-        let resp = reqwest::get(url).await?;
-        let resp: Vec<OneToolResponse> = resp.json().await?;
-        // tracing::info!("resp is: {:?}", resp);
-        let tools = resp
+        let client = reqwest::Client::new();
+
+        #[derive(Serialize, Debug)]
+        struct Input {
+            name: String,
+            mime_type: String,
+        }
+
+        #[derive(Serialize, Debug)]
+        struct Options {
+            operator: String,
+        }
+
+        #[derive(Serialize, Debug)]
+        struct Payload {
+            r#type: String,
+            inputs: Vec<Input>,
+            options: Options,
+        }
+
+        let inputs = files
+            .iter()
+            .map(|f| {
+                let name = PathBuf::from_str(&f.path).unwrap();
+                let name = name.file_name().unwrap().to_str().unwrap();
+                Input {
+                    name: name.to_string(),
+                    mime_type: f.mime_type.clone().unwrap_or("unknown".to_string()),
+                }
+            })
+            .collect();
+
+        let payload = Payload {
+            r#type: "file".to_string(),
+            inputs,
+            options: Options {
+                operator: "or".to_string(),
+            },
+        };
+
+        let url = format!("{}/tools/match", self.root_api.as_str());
+        let response = client
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        let response: Vec<OneToolResponse> = response.json().await.inspect_err(|err| {
+            // dbg!(err);
+        })?;
+        let tools = response
             .into_iter()
             .map(|res| {
                 let slots = res
                     .input_slots
                     .into_iter()
-                    .map(|s| s.name)
+                    .map(|s| s.into())
                     .collect::<Vec<_>>();
 
                 ToolMeta {
@@ -221,12 +347,17 @@ impl ToolSource for ToolRegistry {
     }
 
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
+        if id.starts_with("::st") {
+            if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
+                return Ok(tool.to_owned());
+            }
+        }
         let url = format!("{}/tools/{}", self.root_api.as_str(), id);
         let resp: OneToolResponse = reqwest::get(url).await?.json().await?;
         let slots = resp
             .input_slots
             .into_iter()
-            .map(|s| s.name)
+            .map(|s| s.into())
             .collect::<Vec<_>>();
 
         let tool = ToolMeta {
@@ -261,6 +392,8 @@ impl Dispatcher for MockDispatcher {
         &self,
         uid: &str,
         tool: &ToolMeta,
+        dataset: &str,
+        parameters: &HashMap<String, Value>,
         files: &HashMap<String, FileEntry>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
@@ -482,6 +615,245 @@ impl Dispatcher for MockDispatcher {
             db.entry(id).or_insert(task_handler);
 
             Ok(id)
+        } else if tool.types.contains(&"boutique".to_string())
+            && tool.types.contains(&"vip".to_string())
+        {
+            // VIP case
+
+            // this will be the task handle id stored in the dispatcher DB
+            // and the id is also used in VIP job as the id in the job name.
+            let task_id = uuid::Uuid::new_v4();
+
+            let user_agent = format!("eosc-coordinator/{}", env!("CARGO_PKG_VERSION"));
+            let mut headers = HeaderMap::new();
+            if let Ok(key) = std::env::var("VIP_API_KEY") {
+                headers.insert("apikey", HeaderValue::from_str(&key.to_string())?);
+                // dbg!(key);
+            }
+            let client = ClientBuilder::new()
+                .user_agent(user_agent)
+                .default_headers(headers)
+                .use_native_tls()
+                .build()?;
+
+            // NOTE: this is the payload
+            //
+            // POST https://vip.creatis.insa-lyon.fr/test/rest/executions
+            // apikey: {{VIP_API_KEY}}
+            // ```json
+            // {
+            //     "name" : "test-http-with-api",
+            //     "pipelineIdentifier":"CQUEST/0.6",
+            //     "resultsLocation" : "/vip/Home",
+            //     "inputValues" : {
+            //         "parameter_file": "https://www.creatis.insa-lyon.fr/~abonnet/quest_param_117T_A.txt",
+            //         "data_file": "https://www.creatis.insa-lyon.fr/~abonnet/Rec003_Vox1.mrui",
+            //         "zipped_folder": "https://www.creatis.insa-lyon.fr/~abonnet/basis_11_7.zip"
+            //     }
+            // }
+            // ```
+
+            // TODO:
+            let request_state: serde_json::Map<String, serde_json::Value> = files
+                .iter()
+                .filter_map(|(key, entry)| {
+                    // VIP use the slot id as the key of the file list in the payload
+                    let location = entry.download_url.as_deref()?;
+
+                    let slot_id = tool
+                        .slots
+                        .iter()
+                        .find(|s| s.name == *key)
+                        .map(|s| s.id.clone())?;
+
+                    Some((slot_id, serde_json::Value::String(location.to_string())))
+                })
+                .collect();
+
+            let pipe_name = format!("{}/{}", tool.name, tool.version);
+
+            let payload = serde_json::json!({
+                "name": format!("eosc-{task_id}"),
+                "pipelineIdentifier": pipe_name,
+                "resultsLocation": "/vip/Home",
+                "inputValues": request_state,
+            });
+
+            #[derive(serde::Deserialize)]
+            struct Response {
+                uuid: String,
+            }
+
+            // XXX: this is a blocking call, blocking call should not stay in async block.
+            // See if galaxy provide async call that return immediately with a handler to check the
+            // state.
+            let _resp = client
+                .post("https://vip.creatis.insa-lyon.fr/test/rest/executions")
+                .json(&payload)
+                .send()
+                .await?;
+
+            // XXX: here should propagate the error because the payload can be wrong and the job
+            // cannot be start.
+            // check the resp state and return the error, or return Uuid but make it directly as
+            // failed??
+
+            // TODO: the response can be used for state tracking
+
+            // XXX: vip is redesign the ui, thus there will be a redirect link to the launched job.
+            let callback_url =
+                Url::from_str("https://vip.creatis.insa-lyon.fr/home.html").expect("a valid url");
+
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
+        } else if tool.types.contains(&"mybinder".to_string()) {
+            let task_id = uuid::Uuid::new_v4();
+            // TODO: need to use the helper function I provide in datahugger to get the branch or
+            // commit number.
+            let callback_url = Url::from_str("https://mybinder.org/v2/gh/binder-examples/r/main")
+                .expect("a valid url");
+
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
+        } else if tool.types.contains(&"cernbox".to_string()) {
+            todo!()
+        } else if tool.types.contains(&"rrp".to_string()) {
+            let task_id = uuid::Uuid::new_v4();
+
+            let backend_url = "https://rrp-eosc.ethz.ch";
+
+            let client = Client::builder().build()?;
+            let Some(image_name) = parameters.get("Image Name").map(|v| {
+                let serde_json::Value::String(v) = v.get_inner() else {
+                    unreachable!("must be a string")
+                };
+                v
+            }) else {
+                unreachable!("'Image Name' must be set")
+            };
+
+            // ---- CREATE PROJECT ----
+            let project_data = serde_json::json!({
+                "type": "createFromExternalCatalog",
+                "image": image_name,
+                // "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "environmentType": "jupyterlab",
+            });
+
+            let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
+                panic!("oidc_agent_token not found in env var")
+            };
+            let resp = client
+                .post(format!("{}/api/projects", backend_url))
+                .bearer_auth(oidc_agent_token)
+                .json(&project_data)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                dbg!("fail here");
+                let artifact = Artifact::FailedTool;
+                // TODO: use TaskHandler::new()
+                let task_handler = TaskHandler {
+                    id: HandlerId(task_id),
+                    user_id: UserId(uid.to_string()),
+                    state: ToolState::Exception,
+                    artifact,
+                };
+
+                let mut db = self.db.write().await;
+                db.entry(task_id).or_insert(task_handler);
+
+                return Ok(task_id);
+            }
+            dbg!("go here");
+
+            tracing::info!("Create project: {}", resp.status());
+
+            let location = resp.headers().get("Location").and_then(|v| v.to_str().ok());
+
+            let project_code = location
+                .and_then(|loc| loc.split('/').next_back())
+                .expect("project id not there");
+
+            tracing::info!("Project code: {}", project_code);
+
+            let callback_url = Url::from_str(&format!("{}/projects/{}", backend_url, project_code))
+                .expect("valid url");
+            tracing::info!("Callback URL: {}", callback_url);
+
+            // XXX: get status should be moved to monitor_state.
+            // the state monitor is a dummy one that directly send Ready signal.
+            // It should be send a stream with updating states.
+            //
+            // // ---- GET STATUS ----
+            // let resp = client
+            //     .get(format!("{}/api/projects/{}", backend_url, project_code))
+            //     .send()
+            //     .await?;
+            //
+            // tracing::info!("Status: {}", resp.status());
+            // let json: serde_json::Value = resp.json().await?;
+            //
+            // tracing::debug!("Body: {}", json);
+
+            // // ---- START PROJECT ----
+            // let start_req = serde_json::json!({
+            //     "type": "start",
+            //     "remote": false,
+            // });
+            //
+            // let resp = client
+            //     .post(format!("{}/api/projects/{}", backend_url, project_code))
+            //     .headers(headers)
+            //     .json(&start_req)
+            //     .send()
+            //     .await?;
+            //
+            // println!("Start: {}", resp.status());
+
+            ///// -----------
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
         } else {
             panic!("unknown support VRE");
         }

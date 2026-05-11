@@ -151,13 +151,19 @@ message BrowseComplete {
 // -------------- Start of Tool Service --------------
 // this is what response to client about the vre entity it can utilize.
 // NOTE: @reggie here is what supposed to be stored in the registry.
+message Slot {
+  string id = 1;
+  string typ = 2;
+  string name = 3;
+}
+
 message ToolMeta {
   // id in the tool registry
   string id = 1;
   string version = 2;
   string name = 3;
   string description = 4;
-  repeated string slots = 5;
+  repeated Slot slots = 5;
 }
 
 message BrowseToolsRequest {}
@@ -214,21 +220,35 @@ message ToolState {
   enum State {
     PREPARING = 0;
     reserved 1, 2, 3, 4;
-    READY = 8;
-    DROPPED = 9;
+    READY = 7;
+    DROPPED = 8;
+    EXCEPTION = 9;
   }
 
   string log = 1;
   State state = 2;
 }
 
+message TypedValue {
+  oneof kind {
+    string string_value = 1;
+    // TODO: distinguish int and double
+    double number_value = 2;
+    bool bool_value = 3;
+  }
+}
+
 // XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
 // But in fact, some tool need config files that is independent of data files passed in.
 // We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool. 
 // This interface high likely will be full re-definded.
+//
+// dataset is the url of dataset handler, this should be resolvable by datahugger.
 message LaunchToolRequest {
   string tool_id = 1;
-  map<string, FileEntry> slots_mapping = 2;
+  string dataset = 2;
+  map<string, TypedValue> value_slots_mapping = 3;
+  map<string, FileEntry> file_slots_mapping = 4;
 }
 
 message UserId {
@@ -291,6 +311,8 @@ message EoscInlineTool {
   string callback_url = 1;
 }
 
+message FailedTool {};
+
 message DesktopTool {
   // ?? how??
 }
@@ -299,6 +321,7 @@ message GetArtifactResponse {
   oneof entry_point {
     EoscInlineTool eosc_inline = 1;
     HostedTool hosted = 2;
+    FailedTool failed = 3;
   }
 }
 

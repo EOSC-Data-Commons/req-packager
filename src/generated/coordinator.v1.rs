@@ -239,6 +239,15 @@ pub struct BrowseComplete {
 /// this is what response to client about the vre entity it can utilize.
 /// NOTE: @reggie here is what supposed to be stored in the registry.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Slot {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub typ: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolMeta {
     /// id in the tool registry
     #[prost(string, tag = "1")]
@@ -249,8 +258,8 @@ pub struct ToolMeta {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub description: ::prost::alloc::string::String,
-    #[prost(string, repeated, tag = "5")]
-    pub slots: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "5")]
+    pub slots: ::prost::alloc::vec::Vec<Slot>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrowseToolsRequest {}
@@ -261,7 +270,7 @@ pub struct GetToolRequest {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolResponse {
     #[prost(message, optional, tag = "1")]
     pub tool: ::core::option::Option<ToolMeta>,
@@ -313,8 +322,9 @@ pub mod tool_state {
     #[repr(i32)]
     pub enum State {
         Preparing = 0,
-        Ready = 8,
-        Dropped = 9,
+        Ready = 7,
+        Dropped = 8,
+        Exception = 9,
     }
     impl State {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -326,6 +336,7 @@ pub mod tool_state {
                 Self::Preparing => "PREPARING",
                 Self::Ready => "READY",
                 Self::Dropped => "DROPPED",
+                Self::Exception => "EXCEPTION",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -334,21 +345,49 @@ pub mod tool_state {
                 "PREPARING" => Some(Self::Preparing),
                 "READY" => Some(Self::Ready),
                 "DROPPED" => Some(Self::Dropped),
+                "EXCEPTION" => Some(Self::Exception),
                 _ => None,
             }
         }
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TypedValue {
+    #[prost(oneof = "typed_value::Kind", tags = "1, 2, 3")]
+    pub kind: ::core::option::Option<typed_value::Kind>,
+}
+/// Nested message and enum types in `TypedValue`.
+pub mod typed_value {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(string, tag = "1")]
+        StringValue(::prost::alloc::string::String),
+        /// TODO: distinguish int and double
+        #[prost(double, tag = "2")]
+        NumberValue(f64),
+        #[prost(bool, tag = "3")]
+        BoolValue(bool),
     }
 }
 /// XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
 /// But in fact, some tool need config files that is independent of data files passed in.
 /// We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool.
 /// This interface high likely will be full re-definded.
+///
+/// dataset is the url of dataset handler, this should be resolvable by datahugger.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchToolRequest {
     #[prost(string, tag = "1")]
     pub tool_id: ::prost::alloc::string::String,
-    #[prost(map = "string, message", tag = "2")]
-    pub slots_mapping: ::std::collections::HashMap<
+    #[prost(string, tag = "2")]
+    pub dataset: ::prost::alloc::string::String,
+    #[prost(map = "string, message", tag = "3")]
+    pub value_slots_mapping: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        TypedValue,
+    >,
+    #[prost(map = "string, message", tag = "4")]
+    pub file_slots_mapping: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         FileEntry,
     >,
@@ -432,12 +471,14 @@ pub struct EoscInlineTool {
     #[prost(string, tag = "1")]
     pub callback_url: ::prost::alloc::string::String,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FailedTool {}
 /// ?? how??
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DesktopTool {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetArtifactResponse {
-    #[prost(oneof = "get_artifact_response::EntryPoint", tags = "1, 2")]
+    #[prost(oneof = "get_artifact_response::EntryPoint", tags = "1, 2, 3")]
     pub entry_point: ::core::option::Option<get_artifact_response::EntryPoint>,
 }
 /// Nested message and enum types in `GetArtifactResponse`.
@@ -448,6 +489,8 @@ pub mod get_artifact_response {
         EoscInline(super::EoscInlineTool),
         #[prost(message, tag = "2")]
         Hosted(super::HostedTool),
+        #[prost(message, tag = "3")]
+        Failed(super::FailedTool),
     }
 }
 /// Generated client implementations.
