@@ -229,11 +229,13 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             uri: "cernbox.cern.ch".to_string(),
             types: vec!["data access".to_string(), "cernbox".to_string()],
             description: "Tool to send files to CernBox user".to_string(),
-            slots: vec![Slot {
+            slots: vec![
+                Slot {
                 id: "share_with".to_string(),
                 name: "Share With".to_string(),
                 slot_type: "string".to_string(),
-            }],
+            },
+            ],
         },
     ]
 });
@@ -761,10 +763,12 @@ impl Dispatcher for MockDispatcher {
 
             // XXX: look at all fields here
             // ??, should name and description customized by user?
-            let owner = "rasmus.oscar.welander@egi.eu"; // ??, ready from auth token?
-            let sender_display_name = "Rasmus Oscar Welander"; // ??, read from auth token?
+            let owner = "rasmus.oscar.welander@egi.eu"; // ??, ready from auth token? A: from the
+            // token make sense.
+            let sender_display_name = "Rasmus Oscar Welander"; // ??, read from auth token? from token
                                                                // TODO: this needs to be constructed, and this is the main OCM trick.
-            let sender = "rasmus.oscar.welander@dev2.player.eosc-data-commons.eu";
+            let sender = format!("rasmus.oscar.welander@{domain-of-dispatcher}"); // "rasmus.oscar.welander"  is the sender name in the matchmaker side. also from the token
+            let description = "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation";
 
             fn create_rocrate(/*some inputs parameters*/) -> serde_json::Value {
                 todo!()
@@ -772,13 +776,20 @@ impl Dispatcher for MockDispatcher {
 
             let rocrate = create_rocrate();
 
+            // XXX: resourceId is expected to read from ro-crate from a "identifier" field. To
+            // avoid in the cernbox side consume the same thing multiple times..
+            //
+            //
+            // idea: sciencemesh might discover the deployment and pop to the VRE registry, this is
+            // for the future implemntation.
+
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({
-                "shareWith": format!("{share_with}@{domain}"),
-                "name": "ScienceMesh Research Data Package",
-                "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
-                "providerId": "n/a",
-                "resourceId": "n/a",
+                "shareWith": format!("{share_with}@{domain-of-recipiant}"),
+                "name": "ScienceMesh Research Data Package", // from ro-crate
+                "description": description,
+                "providerId": task_id,
+                "resourceId": format!("{identifier_from_ro_crate}"),
                 "owner": owner,
                 "senderDisplayName": sender_display_name,
                 "sender": sender,
