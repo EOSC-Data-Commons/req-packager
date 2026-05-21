@@ -32,7 +32,7 @@ use std::{
     str::FromStr,
     sync::{Arc, LazyLock},
 };
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use url::Url;
 
 struct DatahuggerDataSource;
@@ -912,7 +912,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("info") // filter logs by level
         .init();
 
-    let addr = "[::1]:50051".parse()?;
+    let addr = "[::0]:443".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
     // (however there is not too much query needed, just index visiting).
@@ -931,7 +931,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tool_src_cloned = Arc::clone(&tool_src);
     let data_player = Dataplayer::new(dispatcher, tool_src_cloned);
 
+    // to generate certifacte files
+    // ```console
+    // # Generate CA private key
+    // openssl genrsa -out ca.key 4096
+    //
+    // # Generate CA certificate
+    // openssl req -x509 -new -nodes -key ca.key -sha256 -days 365 \
+    //   -out ca.pem \
+    //   -subj "/CN=MyTestCA"
+    //
+    // # Server private key
+    // openssl genrsa -out server.key 4096
+    //
+    // # CSR (certificate request)
+    // openssl req -new -key server.key -out server.csr \
+    //   -subj "/CN=example.com"
+    //
+    // # Sign the Server Certificate with CA
+    // openssl x509 -req -in server.csr \
+    //   -CA ca.pem -CAkey ca.key -CAcreateserial \
+    //   -out server.pem -days 365 -sha256
+    // ```
+    //
+    // san.cnf,  IMPORTANT!
+    // ```INI
+    // [req]
+    // distinguished_name=req_distinguished_name
+    // req_extensions = v3_req
+    // prompt = no
+    //
+    // [req_distinguished_name]
+    // CN = example.com
+    //
+    // [v3_req]
+    // subjectAltName = @alt_names
+    //
+    // [alt_names]
+    // DNS.1 = example.com
+    // DNS.2 = localhost
+    // IP.1 = 127.0.0.1
+    // ```
+    //
+    // redo CSR + signing
+    // ```console
+    // openssl req -new -key server.key -out server.csr -config san.cnf
+    //
+    // openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out server.pem -days 365 -sha256 -extensions v3_req -extfile san.cnf
+    // ```
+
+    let cert = std::fs::read_to_string("/etc/certs/coordinator/server.pem")?;
+    let key = std::fs::read_to_string("/etc/certs/coordinator/server.key")?;
+
     Server::builder()
+        .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(&cert, &key)))?
+        .concurrency_limit_per_connection(256)
         .add_service(health_service)
         .add_service(DatasetServiceServer::new(data_relayer))
         .add_service(ToolServiceServer::new(tool_srv))
