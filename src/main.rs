@@ -111,6 +111,7 @@ impl DataSource for DatahuggerDataSource {
     }
 
     async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
+        // `select * from record_files rf where record_identifier = '10.17026/AR/0KCPYB' order by rf.file_type desc`
         let user_agent = format!(
             "datahugger-over-eosc-coordinator/{}",
             env!("CARGO_PKG_VERSION")
@@ -389,16 +390,39 @@ impl MockDispatcher {
     }
 }
 
+enum SlotValue {
+    Value(RawValue),
+    File(FileEntry),
+}
+
+struct AuthToken(String);
+
+type SlotName = String;
+
+enum LaunchInput {
+    DatasetOnly(Url),
+    SlotsOnly(HashMap<SlotName, SlotValue>),
+    FilesOnly(Vec<FileEntry>),
+
+    // use cases??
+    //
+    // SlotsAndFiles {
+    //     slots: HashMap<SlotName, SlotValue>,
+    //     files: Vec<FileEntry>,
+    // },
+}
+
 #[async_trait::async_trait]
 impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
     async fn launch(
         &self,
-        uid: &str,
+        uid: &str, //user id
+        token: &AuthToken,
         tool: &ToolMeta,
-        dataset: &str,
-        parameters: &HashMap<String, Value>,
-        files: &HashMap<String, FileEntry>,
+        input: &LaunchInput,
+        // dataset: &str,
+        // parameters: &HashMap<SlotName, SlotValue>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -995,7 +1019,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("info") // filter logs by level
         .init();
 
-    let addr = "[::1]:50051".parse()?;
+    let addr = "127.0.0.1:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
     // (however there is not too much query needed, just index visiting).
