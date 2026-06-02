@@ -3,9 +3,16 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchRequset, TaskHandler, ToolDatabase, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, Value, grpc::{
-        self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
-    }
+    grpc::{
+        self,
+        dataplayer_service_server::DataplayerServiceServer,
+        dataset_service_server::DatasetServiceServer,
+        tool_service_server::{ToolService, ToolServiceServer},
+        tool_state, ToolTaskHandler,
+    },
+    Artifact, AuthToken, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
+    DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchInput, LaunchRequset, TaskHandler,
+    ToolDatabase, ToolKind, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, Value,
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -133,11 +140,10 @@ impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
     async fn launch(
         &self,
-        uid: &str,
+        uid: &str, //user id
+        token: &AuthToken,
         tool: &ToolMeta,
-        dataset: &str,
-        parameters: &HashMap<String, Value>,
-        files: &HashMap<String, FileEntry>,
+        input: &LaunchInput,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -320,6 +326,7 @@ fn generate_tools() -> Vec<ToolMeta> {
             types: vec![],
             description: "".to_uppercase(),
             slots: vec![],
+            kind: ToolKind::SlotsOnly,
         })
         .collect()
 }

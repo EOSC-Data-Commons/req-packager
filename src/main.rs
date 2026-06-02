@@ -6,15 +6,15 @@ use datahugger::{
 use exn::Exn;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
-use hyper::header::CONTENT_TYPE;
 use indicatif::ProgressBar;
 use req_packager::{
     grpc::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
-    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
-    Slot, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId, Value,
+    Artifact, AuthToken, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry,
+    HandlerId, LaunchInput, Slot, SlotValue, TaskHandler, ToolDatabase, ToolKind, ToolMeta,
+    ToolSource, ToolState, UserId,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -209,6 +209,7 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             types: vec!["general".to_string(), "mybinder".to_string()],
             description: "mybinder as general tool".to_string(),
             slots: vec![],
+            kind: ToolKind::DatasetOnly,
         },
         ToolMeta {
             id: "::st:002".to_string(),
@@ -217,11 +218,9 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             uri: "https://rrp-eosc.ethz.ch/".to_string(),
             types: vec!["general".to_string(), "rrp".to_string()],
             description: "RRP as genenal tool".to_string(),
-            slots: vec![Slot {
-                id: "image_name".to_string(),
-                name: "Image Name".to_string(),
-                slot_type: "string".to_string(),
-            }],
+            slots: vec![],
+            kind: ToolKind::DatasetOnly,
+            // raw_definition: json!({}),
         },
         ToolMeta {
             id: "::st:003".to_string(),
@@ -230,11 +229,8 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             uri: "cernbox.cern.ch".to_string(),
             types: vec!["data access".to_string(), "cernbox".to_string()],
             description: "Tool to send files to CernBox user".to_string(),
-            slots: vec![Slot {
-                id: "share_with".to_string(),
-                name: "Share With".to_string(),
-                slot_type: "string".to_string(),
-            }],
+            slots: vec![],
+            kind: ToolKind::FilesOnly,
         },
     ]
 });
@@ -269,6 +265,9 @@ impl ToolSource for ToolRegistry {
                     name: res.name,
                     description: res.description,
                     slots,
+                    // FIXME: this should read from tool registry as well, for now, default to
+                    // SlotsOnly, because others are not yet registred.
+                    kind: ToolKind::SlotsOnly,
                 }
             })
             .collect::<Vec<_>>();
@@ -345,6 +344,9 @@ impl ToolSource for ToolRegistry {
                     name: res.name,
                     description: res.description,
                     slots,
+                    // FIXME: this should read from tool registry as well, for now, default to
+                    // SlotsOnly, because others are not yet registred.
+                    kind: ToolKind::SlotsOnly,
                 }
             })
             .collect::<Vec<_>>();
@@ -373,6 +375,9 @@ impl ToolSource for ToolRegistry {
             name: resp.name,
             description: resp.description,
             slots,
+            // FIXME: this should read from tool registry as well, for now, default to
+            // SlotsOnly, because others are not yet registred.
+            kind: ToolKind::SlotsOnly,
         };
         return Ok(tool);
     }
@@ -390,28 +395,6 @@ impl MockDispatcher {
     }
 }
 
-enum SlotValue {
-    Value(RawValue),
-    File(FileEntry),
-}
-
-struct AuthToken(String);
-
-type SlotName = String;
-
-enum LaunchInput {
-    DatasetOnly(Url),
-    SlotsOnly(HashMap<SlotName, SlotValue>),
-    FilesOnly(Vec<FileEntry>),
-
-    // use cases??
-    //
-    // SlotsAndFiles {
-    //     slots: HashMap<SlotName, SlotValue>,
-    //     files: Vec<FileEntry>,
-    // },
-}
-
 #[async_trait::async_trait]
 impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
@@ -421,8 +404,6 @@ impl Dispatcher for MockDispatcher {
         token: &AuthToken,
         tool: &ToolMeta,
         input: &LaunchInput,
-        // dataset: &str,
-        // parameters: &HashMap<SlotName, SlotValue>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -580,22 +561,34 @@ impl Dispatcher for MockDispatcher {
                 workflow_id, version[0],
             );
 
-            let request_state: serde_json::Map<String, serde_json::Value> = files
+            let LaunchInput::SlotsOnly(slots) = input else {
+                panic!("not possible.")
+            };
+
+            let request_state: serde_json::Map<String, serde_json::Value> = slots
                 .iter()
                 .filter_map(|(key, entry)| {
-                    let location = entry.download_url.as_deref()?;
+                    match entry {
+                        SlotValue::Value(_) => {
+                            // FIXME: get values from rpc client
+                            todo!()
+                        }
+                        SlotValue::File(f) => {
+                            let location = f.download_url.as_deref()?;
 
-                    let filetype = entry.path.rsplit('.').next().unwrap_or("txt");
+                            let filetype = f.path.rsplit('.').next().unwrap_or("txt");
 
-                    Some((
-                        key.clone(),
-                        // @reggie galaxy specific info
-                        serde_json::json!({
-                            "class": "File",
-                            "filetype": filetype,
-                            "location": location
-                        }),
-                    ))
+                            Some((
+                                key.clone(),
+                                // @reggie galaxy specific info
+                                serde_json::json!({
+                                    "class": "File",
+                                    "filetype": filetype,
+                                    "location": location
+                                }),
+                            ))
+                        }
+                    }
                 })
                 .collect();
 
@@ -681,20 +674,32 @@ impl Dispatcher for MockDispatcher {
             // }
             // ```
 
+            let LaunchInput::SlotsOnly(slots) = input else {
+                panic!("not possible.")
+            };
+
             // TODO:
-            let request_state: serde_json::Map<String, serde_json::Value> = files
+            let request_state: serde_json::Map<String, serde_json::Value> = slots
                 .iter()
                 .filter_map(|(key, entry)| {
-                    // VIP use the slot id as the key of the file list in the payload
-                    let location = entry.download_url.as_deref()?;
+                    match entry {
+                        SlotValue::Value(_) => {
+                            // FIXME: get values from rpc client
+                            todo!()
+                        }
+                        SlotValue::File(f) => {
+                            // VIP use the slot id as the key of the file list in the payload
+                            let location = f.download_url.as_deref()?;
 
-                    let slot_id = tool
-                        .slots
-                        .iter()
-                        .find(|s| s.name == *key)
-                        .map(|s| s.id.clone())?;
+                            let slot_id = tool
+                                .slots
+                                .iter()
+                                .find(|s| s.name == *key)
+                                .map(|s| s.id.clone())?;
 
-                    Some((slot_id, serde_json::Value::String(location.to_string())))
+                            Some((slot_id, serde_json::Value::String(location.to_string())))
+                        }
+                    }
                 })
                 .collect();
 
@@ -852,27 +857,74 @@ impl Dispatcher for MockDispatcher {
 
             Ok(task_id)
         } else if tool.types.contains(&"rrp".to_string()) {
+            //
+            //
+            // {
+            //     "type": "createFromExternalCatalog",
+            //     "image": "registry.example.com/repo2docker/jupyter:latest",
+            //     "environmentType": "repo2docker",
+            //     "name": "my-project",
+            //     "description": "Example project with all optional settings filled",
+            //     "resources": {
+            //       "cpu": 4.0,
+            //       "memMb": 8192
+            //     },
+            //     "dataMappingTemplate": [
+            //       { "type": "mountPoint", "name": "genome" },
+            //       {
+            //         "type": "directory",
+            //         "name": "data",
+            //         "children": [
+            //           { "type": "mountPoint", "name": "raw" }
+            //         ]
+            //       }
+            //     ],
+            //     "dataMapping": {
+            //       "genome": {
+            //         "type": "openbis",
+            //         "server": "https://openbis.example.com",
+            //         "permId": "20240101120000000-1",
+            //         "path": "sequences"
+            //       },
+            //       "data/raw": {
+            //         "type": "zenodo",
+            //         "doi": "10.5281/zenodo.1234567"
+            //       }
+            //     }
+            //   }
+
+            dbg!("should be here!");
             let task_id = uuid::Uuid::new_v4();
 
             let backend_url = "https://rrp-eosc.ethz.ch";
 
             let client = Client::builder().build()?;
-            let Some(image_name) = parameters.get("Image Name").map(|v| {
-                let serde_json::Value::String(v) = v.get_inner() else {
-                    unreachable!("must be a string")
-                };
-                v
-            }) else {
-                unreachable!("'Image Name' must be set")
+
+            // let LaunchInput::FilesOnly(files) = input else {
+            //     panic!("not possible.")
+            // };
+            let LaunchInput::DatasetOnly(url) = input else {
+                // FIXME: Files only is possible. UI should support set file and rename.
+                panic!("not possible")
             };
+            let doi = url.trim_start_matches("https://doi.org/");
+            dbg!(doi);
+            // doi = "10.5281/zenodo.20507550"
 
             // ---- CREATE PROJECT ----
+            // FIXME:: image_name is from toolmeta
             let project_data = serde_json::json!({
                 "type": "createFromExternalCatalog",
-                "image": image_name,
-                // "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "name": format!("eosc-{task_id}"),
                 "environmentType": "jupyterlab",
+                "data/raw": {
+                    "type": "zenodo",
+                    "doi": doi,
+                },
             });
+
+            // FIXME: start project and pass files into it
 
             let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
                 panic!("oidc_agent_token not found in env var")
@@ -1019,7 +1071,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("info") // filter logs by level
         .init();
 
-    let addr = "127.0.0.1:50051".parse()?;
+    let addr = "[::1]:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
     // (however there is not too much query needed, just index visiting).

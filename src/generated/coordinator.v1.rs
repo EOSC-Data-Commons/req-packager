@@ -258,8 +258,52 @@ pub struct ToolMeta {
     pub name: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub description: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "5")]
+    #[prost(enumeration = "tool_meta::ToolKind", tag = "5")]
+    pub kind: i32,
+    #[prost(message, repeated, tag = "6")]
     pub slots: ::prost::alloc::vec::Vec<Slot>,
+}
+/// Nested message and enum types in `ToolMeta`.
+pub mod tool_meta {
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum ToolKind {
+        DatasetOnly = 0,
+        SlotsOnly = 1,
+        FilesOnly = 2,
+    }
+    impl ToolKind {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::DatasetOnly => "DatasetOnly",
+                Self::SlotsOnly => "SlotsOnly",
+                Self::FilesOnly => "FilesOnly",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "DatasetOnly" => Some(Self::DatasetOnly),
+                "SlotsOnly" => Some(Self::SlotsOnly),
+                "FilesOnly" => Some(Self::FilesOnly),
+                _ => None,
+            }
+        }
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BrowseToolsRequest {}
@@ -353,7 +397,7 @@ pub mod tool_state {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TypedValue {
-    #[prost(oneof = "typed_value::Kind", tags = "1, 2, 3")]
+    #[prost(oneof = "typed_value::Kind", tags = "1, 2, 3, 4")]
     pub kind: ::core::option::Option<typed_value::Kind>,
 }
 /// Nested message and enum types in `TypedValue`.
@@ -367,6 +411,8 @@ pub mod typed_value {
         NumberValue(f64),
         #[prost(bool, tag = "3")]
         BoolValue(bool),
+        #[prost(message, tag = "4")]
+        File(super::FileEntry),
     }
 }
 /// XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
@@ -382,14 +428,9 @@ pub struct LaunchToolRequest {
     #[prost(string, tag = "2")]
     pub dataset: ::prost::alloc::string::String,
     #[prost(map = "string, message", tag = "3")]
-    pub value_slots_mapping: ::std::collections::HashMap<
+    pub slots_mapping: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         TypedValue,
-    >,
-    #[prost(map = "string, message", tag = "4")]
-    pub file_slots_mapping: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        FileEntry,
     >,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

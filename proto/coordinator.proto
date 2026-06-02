@@ -158,12 +158,20 @@ message Slot {
 }
 
 message ToolMeta {
+  enum ToolKind {
+    DatasetOnly = 0;
+    SlotsOnly = 1;
+    FilesOnly = 2;
+  }
+
   // id in the tool registry
   string id = 1;
   string version = 2;
   string name = 3;
   string description = 4;
-  repeated Slot slots = 5;
+
+  ToolKind kind = 5;
+  repeated Slot slots = 6;
 }
 
 message BrowseToolsRequest {}
@@ -235,6 +243,7 @@ message TypedValue {
     // TODO: distinguish int and double
     double number_value = 2;
     bool bool_value = 3;
+    FileEntry file = 4;
   }
 }
 
@@ -247,8 +256,7 @@ message TypedValue {
 message LaunchToolRequest {
   string tool_id = 1;
   string dataset = 2;
-  map<string, TypedValue> value_slots_mapping = 3;
-  map<string, FileEntry> file_slots_mapping = 4;
+  map<string, TypedValue> slots_mapping = 3;
 }
 
 message UserId {
