@@ -72,6 +72,7 @@ impl CrawlFileExt for datahugger::Dataset {
                     let f: FileEntry = f.into();
                     Some(Ok(f))
                 }
+                Ok(Entry::Zip(_)) => None,
                 Err(e) => Some(Err(e)),
             }
         })
@@ -416,6 +417,10 @@ impl Dispatcher for MockDispatcher {
         // 2. return a dummy url to be printed in the UI frontend.
 
         // should tool meta contain all info to let dispatcher know "how to launch a tool?"
+
+        // VIP
+        // RRP
+        //
 
         // XXX: mock only the galaxy behavior, @reggie we need to find the pattern here to do the proper
         // abstraction.
@@ -912,20 +917,30 @@ impl Dispatcher for MockDispatcher {
             // doi = "10.5281/zenodo.20507550"
 
             // ---- CREATE PROJECT ----
-            // FIXME:: image_name is from toolmeta
+            // FIXME:: image name is from toolmeta
             let project_data = serde_json::json!({
                 "type": "createFromExternalCatalog",
                 "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
                 "name": format!("eosc-{task_id}"),
                 "environmentType": "jupyterlab",
-                "data/raw": {
-                    "type": "zenodo",
-                    "doi": doi,
-                },
+                "dataMappingTemplate": [
+                  {
+                    "type": "directory",
+                    "name": "data",
+                    "children": [
+                      { "type": "mountPoint", "name": "raw" }
+                    ]
+                  }
+                ],
+                "dataMapping": {
+                    "data/raw": {
+                        "type": "zenodo",
+                        "doi": doi
+                    }
+                }
             });
 
             // FIXME: start project and pass files into it
-
             let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
                 panic!("oidc_agent_token not found in env var")
             };
@@ -1080,8 +1095,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_src = Arc::new(DatahuggerDataSource::new());
     let data_relayer = DataRelayer::new(data_src);
 
-    let root_api = Url::from_str("http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1")
-        .expect("invalid url");
+    let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
+        .unwrap_or("https://dev.tools-registry.eosc-data-commons.eu/api/v1".to_string());
+
+    let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
     let tool_src_cloned = Arc::clone(&tool_src);
     let tool_srv = ToolDatabase::new(tool_src_cloned);
