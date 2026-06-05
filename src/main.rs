@@ -205,8 +205,8 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             version: "v0".to_string(),
             name: "mybinder".to_string(),
             uri: "https://mybinder.org/".to_string(),
-            types: vec!["general_tool".to_string(), "mybinder".to_string()],
-            description: "mybinder as genenal tool".to_string(),
+            types: vec!["general".to_string(), "mybinder".to_string()],
+            description: "mybinder as general tool".to_string(),
             slots: vec![],
         },
         ToolMeta {
@@ -214,7 +214,7 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             version: "v0".to_string(),
             name: "Reproduciple Research Platform (RRP)".to_string(),
             uri: "https://rrp-eosc.ethz.ch/".to_string(),
-            types: vec!["general_tool".to_string(), "rrp".to_string()],
+            types: vec!["general".to_string(), "rrp".to_string()],
             description: "RRP as genenal tool".to_string(),
             slots: vec![Slot {
                 id: "image_name".to_string(),
@@ -227,9 +227,13 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             version: "v0".to_string(),
             name: "CernBox".to_string(),
             uri: "cernbox.cern.ch".to_string(),
-            types: vec!["general_tool".to_string(), "cernbox".to_string()],
+            types: vec!["data access".to_string(), "cernbox".to_string()],
             description: "Tool to send files to CernBox user".to_string(),
-            slots: vec![],
+            slots: vec![Slot {
+                id: "share_with".to_string(),
+                name: "Share With".to_string(),
+                slot_type: "string".to_string(),
+            }],
         },
     ]
 });
@@ -742,7 +746,87 @@ impl Dispatcher for MockDispatcher {
 
             Ok(task_id)
         } else if tool.types.contains(&"cernbox".to_string()) {
-            todo!()
+            let task_id = uuid::Uuid::new_v4();
+
+            let domain = "qa.cernbox.cern.ch";
+            let client = Client::builder().build()?;
+            let Some(share_with) = parameters.get("Shared With").map(|v| {
+                let serde_json::Value::String(v) = v.get_inner() else {
+                    unreachable!("must be a string")
+                };
+                v
+            }) else {
+                unreachable!("'Share With' must be set")
+            };
+
+            // XXX: look at all fields here
+            // ??, should name and description customized by user?
+            let owner = "rasmus.oscar.welander@egi.eu"; // ??, ready from auth token?
+            let sender_display_name = "Rasmus Oscar Welander"; // ??, read from auth token?
+                                                               // TODO: this needs to be constructed, and this is the main OCM trick.
+            let sender = "rasmus.oscar.welander@dev2.player.eosc-data-commons.eu";
+
+            fn create_rocrate(/*some inputs parameters*/) -> serde_json::Value {
+                todo!()
+            }
+
+            let rocrate = create_rocrate();
+
+            // ---- CREATE PROJECT ----
+            let project_data = serde_json::json!({
+                "shareWith": format!("{share_with}@{domain}"),
+                "name": "ScienceMesh Research Data Package",
+                "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
+                "providerId": "n/a",
+                "resourceId": "n/a",
+                "owner": owner,
+                "senderDisplayName": sender_display_name,
+                "sender": sender,
+                "resourceType": "embedded",
+                "shareType": "user",
+                "protocol": {
+                  "name": "multi",
+                  "embedded": {"payload": rocrate}}
+                }
+            );
+
+            let api_url = format!("https://{domain}/ocm/shares");
+            let resp = client.post(api_url).json(&project_data).send().await?;
+
+            if !resp.status().is_success() {
+                dbg!("fail here");
+                let artifact = Artifact::FailedTool;
+                // TODO: use TaskHandler::new()
+                let task_handler = TaskHandler {
+                    id: HandlerId(task_id),
+                    user_id: UserId(uid.to_string()),
+                    state: ToolState::Exception,
+                    artifact,
+                };
+
+                let mut db = self.db.write().await;
+                db.entry(task_id).or_insert(task_handler);
+
+                return Ok(task_id);
+            }
+
+            let callback_url = Url::from_str("https://cernbox.cern.ch").expect("valid url");
+
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
         } else if tool.types.contains(&"rrp".to_string()) {
             let task_id = uuid::Uuid::new_v4();
 
@@ -792,7 +876,6 @@ impl Dispatcher for MockDispatcher {
 
                 return Ok(task_id);
             }
-            dbg!("go here");
 
             tracing::info!("Create project: {}", resp.status());
 
