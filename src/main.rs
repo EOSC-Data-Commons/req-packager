@@ -13,14 +13,15 @@ use req_packager::{
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
     Artifact, AuthToken, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry,
-    HandlerId, LaunchInput, Slot, SlotValue, TaskHandler, ToolDatabase, ToolKind, ToolMeta,
-    ToolSource, ToolState, UserId,
+    HandlerId, LaunchInput, RenameName, Slot, SlotValue, TaskHandler, ToolDatabase, ToolKind,
+    ToolMeta, ToolSource, ToolState, UserId,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
     Client, ClientBuilder,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tonic_health::server::HealthReporter;
 
 use tokio::sync::RwLock;
@@ -230,8 +231,12 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             uri: "cernbox.cern.ch".to_string(),
             types: vec!["data access".to_string(), "cernbox".to_string()],
             description: "Tool to send files to CernBox user".to_string(),
-            slots: vec![],
-            kind: ToolKind::FilesOnly,
+            slots: vec![Slot {
+                id: "shared_with".to_string(),
+                name: "Shared With".to_string(),
+                slot_type: "string".to_string(),
+            }],
+            kind: ToolKind::SlotsAndFiles,
         },
     ]
 });
@@ -782,37 +787,118 @@ impl Dispatcher for MockDispatcher {
         } else if tool.types.contains(&"cernbox".to_string()) {
             let task_id = uuid::Uuid::new_v4();
 
+            let LaunchInput::SlotsAndFiles { slots, files } = input else {
+                panic!("not possible.")
+            };
+
             let domain = "qa.cernbox.cern.ch";
             let client = Client::builder().build()?;
-            let Some(share_with) = parameters.get("Shared With").map(|v| {
-                let serde_json::Value::String(v) = v.get_inner() else {
-                    unreachable!("must be a string")
-                };
-                v
+            let Some(share_with) = slots.get("Shared With").map(|v| match v {
+                SlotValue::File(_) => unreachable!("must be a value"),
+                SlotValue::Value(v) => {
+                    let serde_json::Value::String(v) = v else {
+                        unreachable!("must be a string")
+                    };
+                    v
+                }
             }) else {
                 unreachable!("'Share With' must be set")
             };
 
             // XXX: look at all fields here
             // ??, should name and description customized by user?
-            let owner = "rasmus.oscar.welander@egi.eu"; // ??, ready from auth token?
-            let sender_display_name = "Rasmus Oscar Welander"; // ??, read from auth token?
-                                                               // TODO: this needs to be constructed, and this is the main OCM trick.
-            let sender = "rasmus.oscar.welander@dev2.player.eosc-data-commons.eu";
+            let owner = "jusong.yu@egi.eu"; // ??, ready from auth token?
+            let sender_display_name = "Jusong Yu"; // ??, read from auth token?
+                                                   // TODO: this needs to be constructed, and this is the main OCM trick.
+            let sender = "jusong.yu@dev1.player.eosc-data-commons.eu";
 
-            fn create_rocrate(/*some inputs parameters*/) -> serde_json::Value {
-                todo!()
+            fn create_rocrate(files: &HashMap<RenameName, FileEntry>) -> serde_json::Value {
+                dbg!(files);
+                let mut graph: Vec<serde_json::Value> = Vec::new();
+                let mut has_part: Vec<serde_json::Value> = Vec::new();
+
+                // Take only first two files
+                for (i, (name, file)) in files.iter().enumerate() {
+                    let id = format!("#file-{}", i);
+
+                    has_part.push(json!({ "@id": id }));
+
+                    graph.push(json!({
+                        "@id": id,
+                        "@type": "File",
+                        // XXX: this should be rename_to
+                        "name": name.to_string(),
+                        // "description": file.description, // ?? need this??
+                        "encodingFormat": file.mime_type,
+                        "url": &file.download_url
+                    }));
+                }
+
+                // Root dataset
+                graph.insert(0, json!({
+                    "@id": "./",
+                    "@type": "Dataset",
+                    "name": "ScienceMesh Research Data Package",
+                    "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
+                    "datePublished": chrono::Utc::now().to_rfc3339(),
+                    "creator": { "@id": "#creator" },
+                    "runsOn": { "@id": "#destination" },
+                    "hasPart": has_part
+                }));
+
+                // Metadata descriptor
+                graph.push(json!({
+                    "@id": "ro-crate-metadata.json",
+                    "@type": "CreativeWork",
+                    "about": { "@id": "./" },
+                    "conformsTo": { "@id": "https://w3id.org/ro/crate/1.1" }
+                }));
+
+                // Static entities (keep your existing ones)
+                graph.push(json!({
+                    "@id": "#destination",
+                    "@type": "Service",
+                    "name": "ScienceMesh Service",
+                    "url": "https://qa.cernbox.cern.ch"
+                }));
+
+                // XXX: redundant information, record twice.
+                // The ro-crate format required by the cernbox is a subset of EDC ro-crate.
+                graph.push(json!({
+                    "@id": "#creator",
+                    "@type": "Person",
+                    "name": "Rasmus Oscar Welander",
+                    "userid": "rasmus.oscar.welander@egi.eu"
+                }));
+
+                graph.push(json!({
+                    "@id": "#sender",
+                    "@type": "Person",
+                    "name": "Rasmus Oscar Welander",
+                    "userid": "rasmus.oscar.welander@egi.eu"
+                }));
+
+                graph.push(json!({
+                    "@id": "#receiver",
+                    "@type": "Person",
+                    "userid": "rwelande@cernbox.cern.ch"
+                }));
+
+                json!({
+                    "@context": "https://w3id.org/ro/crate/1.1/context",
+                    "@graph": graph
+                })
             }
 
-            let rocrate = create_rocrate();
+            let rocrate = create_rocrate(files);
 
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({
                 "shareWith": format!("{share_with}@{domain}"),
                 "name": "ScienceMesh Research Data Package",
                 "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
-                "providerId": "n/a",
-                "resourceId": "n/a",
+                "providerId": &uuid::Uuid::new_v4(),
+                "resourceId": task_id,
                 "owner": owner,
                 "senderDisplayName": sender_display_name,
                 "sender": sender,
@@ -824,13 +910,14 @@ impl Dispatcher for MockDispatcher {
                 }
             );
 
+            println!("{}", serde_json::to_string_pretty(&project_data).unwrap());
+
             let api_url = format!("https://{domain}/ocm/shares");
             let resp = client.post(api_url).json(&project_data).send().await?;
 
             if !resp.status().is_success() {
                 dbg!("fail here");
                 let artifact = Artifact::FailedTool;
-                // TODO: use TaskHandler::new()
                 let task_handler = TaskHandler {
                     id: HandlerId(task_id),
                     user_id: UserId(uid.to_string()),

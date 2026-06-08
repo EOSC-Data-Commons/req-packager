@@ -162,6 +162,7 @@ message ToolMeta {
     DatasetOnly = 0;
     SlotsOnly = 1;
     FilesOnly = 2;
+    SlotsAndFiles = 3;
   }
 
   // id in the tool registry
@@ -257,6 +258,7 @@ message LaunchToolRequest {
   string tool_id = 1;
   string dataset = 2;
   map<string, TypedValue> slots_mapping = 3;
+  map<string, FileEntry> files = 4;
 }
 
 message UserId {

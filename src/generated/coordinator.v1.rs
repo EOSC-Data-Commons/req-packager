@@ -281,6 +281,7 @@ pub mod tool_meta {
         DatasetOnly = 0,
         SlotsOnly = 1,
         FilesOnly = 2,
+        SlotsAndFiles = 3,
     }
     impl ToolKind {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -292,6 +293,7 @@ pub mod tool_meta {
                 Self::DatasetOnly => "DatasetOnly",
                 Self::SlotsOnly => "SlotsOnly",
                 Self::FilesOnly => "FilesOnly",
+                Self::SlotsAndFiles => "SlotsAndFiles",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -300,6 +302,7 @@ pub mod tool_meta {
                 "DatasetOnly" => Some(Self::DatasetOnly),
                 "SlotsOnly" => Some(Self::SlotsOnly),
                 "FilesOnly" => Some(Self::FilesOnly),
+                "SlotsAndFiles" => Some(Self::SlotsAndFiles),
                 _ => None,
             }
         }
@@ -432,6 +435,8 @@ pub struct LaunchToolRequest {
         ::prost::alloc::string::String,
         TypedValue,
     >,
+    #[prost(map = "string, message", tag = "4")]
+    pub files: ::std::collections::HashMap<::prost::alloc::string::String, FileEntry>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserId {

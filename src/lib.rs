@@ -909,6 +909,7 @@ pub enum ToolKind {
     DatasetOnly,
     SlotsOnly,
     FilesOnly,
+    SlotsAndFiles,
 }
 
 #[derive(Debug, Clone)]
@@ -933,6 +934,7 @@ impl From<ToolMeta> for grpc::ToolMeta {
             ToolKind::DatasetOnly => grpc::tool_meta::ToolKind::DatasetOnly,
             ToolKind::SlotsOnly => grpc::tool_meta::ToolKind::SlotsOnly,
             ToolKind::FilesOnly => grpc::tool_meta::ToolKind::FilesOnly,
+            ToolKind::SlotsAndFiles => grpc::tool_meta::ToolKind::SlotsAndFiles,
         };
 
         grpc::ToolMeta {
@@ -1019,7 +1021,8 @@ impl Value {
 
 pub struct AuthToken(String);
 
-type SlotName = String;
+pub type SlotName = String;
+pub type RenameName = String;
 
 pub enum SlotValue {
     Value(serde_json::Value),
@@ -1030,12 +1033,10 @@ pub enum LaunchInput {
     DatasetOnly(String),
     SlotsOnly(HashMap<SlotName, SlotValue>),
     FilesOnly(Vec<FileEntry>),
-    // use cases??
-    //
-    // SlotsAndFiles {
-    //     slots: HashMap<SlotName, SlotValue>,
-    //     files: Vec<FileEntry>,
-    // },
+    SlotsAndFiles {
+        slots: HashMap<SlotName, SlotValue>,
+        files: HashMap<RenameName, FileEntry>,
+    },
 }
 
 #[async_trait::async_trait]
@@ -1181,14 +1182,24 @@ impl DataplayerService for Dataplayer {
             })
             .collect::<HashMap<SlotName, SlotValue>>();
 
+        let files = req
+            .files
+            .clone()
+            .into_iter()
+            .map(|(k, f)| (k, f.into()))
+            .collect();
+
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
 
         let launch_inp = match tool_meta.kind {
             ToolKind::DatasetOnly => LaunchInput::DatasetOnly(req.dataset.clone()),
             ToolKind::SlotsOnly => LaunchInput::SlotsOnly(slots),
             ToolKind::FilesOnly => {
-                // FIXME: for CernBox cases
                 todo!()
+            }
+            ToolKind::SlotsAndFiles => {
+                // FIXME: for CernBox cases
+                LaunchInput::SlotsAndFiles { slots, files }
             }
         };
 
