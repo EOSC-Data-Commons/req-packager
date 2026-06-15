@@ -886,11 +886,14 @@ pub enum RuntimeKind {
 // - Here in the coordinator.
 // - In the matchmaker, it should showing different input text box for different types.
 // At the moment, I relay the string to UI.
+// TODO: (jyu) name -> display_name
+// TODO: (jyu) use enum slot_type, num/str/flag/text/file
 #[derive(Debug, Clone)]
 pub struct Slot {
     pub id: String,
     pub name: String,
     pub slot_type: String,
+    pub is_optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
@@ -900,6 +903,7 @@ impl From<Slot> for grpc::Slot {
             id: value.id,
             name: value.name,
             typ: value.slot_type,
+            is_optional: value.is_optional,
         }
     }
 }

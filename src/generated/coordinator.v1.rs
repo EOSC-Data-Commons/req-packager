@@ -246,6 +246,8 @@ pub struct Slot {
     pub typ: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub name: ::prost::alloc::string::String,
+    #[prost(bool, tag = "4")]
+    pub is_optional: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolMeta {

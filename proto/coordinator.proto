@@ -155,6 +155,7 @@ message Slot {
   string id = 1;
   string typ = 2;
   string name = 3;
+  bool is_optional = 4;
 }
 
 message ToolMeta {

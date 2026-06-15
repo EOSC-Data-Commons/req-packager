@@ -176,6 +176,7 @@ struct ResponseSlot {
     name: String,
     #[serde(rename = "type")]
     slot_type: String,
+    optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
@@ -185,6 +186,7 @@ impl From<ResponseSlot> for Slot {
             id: value.id,
             slot_type: value.slot_type,
             name: value.name,
+            is_optional: value.optional,
         }
     }
 }
@@ -235,6 +237,7 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
                 id: "shared_with".to_string(),
                 name: "Shared With".to_string(),
                 slot_type: "string".to_string(),
+                is_optional: false,
             }],
             kind: ToolKind::SlotsAndFiles,
         },
