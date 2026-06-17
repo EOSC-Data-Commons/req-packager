@@ -3,12 +3,10 @@ pub mod grpc {
 }
 use chrono::{DateTime, TimeZone, Utc};
 use datahugger::FileMeta;
-use futures_util::{StreamExt, TryStreamExt};
-use jsonwebtoken::{encode, EncodingKey, Header};
+use futures_util::StreamExt;
+use jsonwebtoken::dangerous::insecure_decode;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 
 use futures_core::stream::BoxStream;
 use grpc::{
@@ -323,7 +321,7 @@ impl DatasetService for DataRelayer {
                         .ok();
                     } else {
                         // Ok
-                        let (new_files, new_bytes) = if !file.is_dir.clone() {
+                        let (new_files, new_bytes) = if !file.is_dir {
                             let new_files = files_count.fetch_add(1, Ordering::Relaxed) + 1;
 
                             let new_bytes =
@@ -1102,10 +1100,16 @@ fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
 
     let token = &auth_str[7..]; // strip "Bearer "
 
+    dbg!(token);
     // Decode JWT
-    let decoding_key = DecodingKey::from_secret(b"my_secret_key"); // or public key if RS256
-    let token_data = decode::<Claims>(token, &decoding_key, &Validation::new(Algorithm::HS256))
-        .map_err(|_| Status::unauthenticated("Invalid token"))?;
+    // NOTE: no need because coordinator is only accessable from inside cyfronet.
+    let token_data =
+        insecure_decode::<Claims>(token).map_err(|_| Status::unauthenticated("Invalid token"))?;
+
+    // let secret = std::env::var("OIDC_CLIENT_SECRET").unwrap();
+    // let decoding_key = DecodingKey::from_secret(secret.as_bytes()); // or public key if RS256
+    // let token_data = decode::<Claims>(token, &decoding_key, &Validation::new(Algorithm::HS256))
+    //     .map_err(|_| Status::unauthenticated("Invalid token"))?;
 
     Ok(token_data.claims.sub)
 }
@@ -1113,24 +1117,8 @@ fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
 #[derive(Debug, Deserialize, Serialize)]
 struct Claims {
     sub: String,
-    name: String,
-    role: String,
+    preferred_username: String,
     exp: usize,
-}
-
-pub fn create_token() -> String {
-    let claims = Claims {
-        sub: "user123".to_string(),
-        name: "Alice".to_string(),
-        role: "admin".to_string(),
-        exp: 1_999_999_999, // some expiration
-    };
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(b"my_secret_key"),
-    )
-    .unwrap()
 }
 
 impl From<grpc::TypedValue> for SlotValue {
