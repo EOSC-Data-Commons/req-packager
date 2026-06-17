@@ -6,21 +6,22 @@ use datahugger::{
 use exn::Exn;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
-use hyper::header::CONTENT_TYPE;
 use indicatif::ProgressBar;
 use req_packager::{
     grpc::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
-    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
-    Slot, TaskHandler, ToolDatabase, ToolMeta, ToolSource, ToolState, UserId, Value,
+    Artifact, AuthToken, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry,
+    HandlerId, LaunchInput, RenameName, Slot, SlotValue, TaskHandler, ToolDatabase, ToolKind,
+    ToolMeta, ToolSource, ToolState, UserId,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
     Client, ClientBuilder,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tonic_health::server::HealthReporter;
 
 use tokio::sync::RwLock;
@@ -72,6 +73,7 @@ impl CrawlFileExt for datahugger::Dataset {
                     let f: FileEntry = f.into();
                     Some(Ok(f))
                 }
+                Ok(Entry::Zip(_)) => None,
                 Err(e) => Some(Err(e)),
             }
         })
@@ -111,6 +113,7 @@ impl DataSource for DatahuggerDataSource {
     }
 
     async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
+        // `select * from record_files rf where record_identifier = '10.17026/AR/0KCPYB' order by rf.file_type desc`
         let user_agent = format!(
             "datahugger-over-eosc-coordinator/{}",
             env!("CARGO_PKG_VERSION")
@@ -173,6 +176,7 @@ struct ResponseSlot {
     name: String,
     #[serde(rename = "type")]
     slot_type: String,
+    optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
@@ -182,6 +186,7 @@ impl From<ResponseSlot> for Slot {
             id: value.id,
             slot_type: value.slot_type,
             name: value.name,
+            is_optional: value.optional,
         }
     }
 }
@@ -208,6 +213,7 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             types: vec!["general".to_string(), "mybinder".to_string()],
             description: "mybinder as general tool".to_string(),
             slots: vec![],
+            kind: ToolKind::DatasetOnly,
         },
         ToolMeta {
             id: "::st:002".to_string(),
@@ -216,11 +222,9 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             uri: "https://rrp-eosc.ethz.ch/".to_string(),
             types: vec!["general".to_string(), "rrp".to_string()],
             description: "RRP as genenal tool".to_string(),
-            slots: vec![Slot {
-                id: "image_name".to_string(),
-                name: "Image Name".to_string(),
-                slot_type: "string".to_string(),
-            }],
+            slots: vec![],
+            kind: ToolKind::DatasetOnly,
+            // raw_definition: json!({}),
         },
         ToolMeta {
             id: "::st:003".to_string(),
@@ -230,10 +234,12 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             types: vec!["data access".to_string(), "cernbox".to_string()],
             description: "Tool to send files to CernBox user".to_string(),
             slots: vec![Slot {
-                id: "share_with".to_string(),
-                name: "Share With".to_string(),
+                id: "shared_with".to_string(),
+                name: "Shared With".to_string(),
                 slot_type: "string".to_string(),
+                is_optional: false,
             }],
+            kind: ToolKind::SlotsAndFiles,
         },
     ]
 });
@@ -268,6 +274,9 @@ impl ToolSource for ToolRegistry {
                     name: res.name,
                     description: res.description,
                     slots,
+                    // FIXME: this should read from tool registry as well, for now, default to
+                    // SlotsOnly, because others are not yet registred.
+                    kind: ToolKind::SlotsOnly,
                 }
             })
             .collect::<Vec<_>>();
@@ -344,6 +353,9 @@ impl ToolSource for ToolRegistry {
                     name: res.name,
                     description: res.description,
                     slots,
+                    // FIXME: this should read from tool registry as well, for now, default to
+                    // SlotsOnly, because others are not yet registred.
+                    kind: ToolKind::SlotsOnly,
                 }
             })
             .collect::<Vec<_>>();
@@ -372,6 +384,9 @@ impl ToolSource for ToolRegistry {
             name: resp.name,
             description: resp.description,
             slots,
+            // FIXME: this should read from tool registry as well, for now, default to
+            // SlotsOnly, because others are not yet registred.
+            kind: ToolKind::SlotsOnly,
         };
         return Ok(tool);
     }
@@ -394,11 +409,10 @@ impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
     async fn launch(
         &self,
-        uid: &str,
+        uid: &str, //user id
+        token: &AuthToken,
         tool: &ToolMeta,
-        dataset: &str,
-        parameters: &HashMap<String, Value>,
-        files: &HashMap<String, FileEntry>,
+        input: &LaunchInput,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -411,6 +425,10 @@ impl Dispatcher for MockDispatcher {
         // 2. return a dummy url to be printed in the UI frontend.
 
         // should tool meta contain all info to let dispatcher know "how to launch a tool?"
+
+        // VIP
+        // RRP
+        //
 
         // XXX: mock only the galaxy behavior, @reggie we need to find the pattern here to do the proper
         // abstraction.
@@ -556,22 +574,34 @@ impl Dispatcher for MockDispatcher {
                 workflow_id, version[0],
             );
 
-            let request_state: serde_json::Map<String, serde_json::Value> = files
+            let LaunchInput::SlotsOnly(slots) = input else {
+                panic!("not possible.")
+            };
+
+            let request_state: serde_json::Map<String, serde_json::Value> = slots
                 .iter()
                 .filter_map(|(key, entry)| {
-                    let location = entry.download_url.as_deref()?;
+                    match entry {
+                        SlotValue::Value(_) => {
+                            // FIXME: get values from rpc client
+                            todo!()
+                        }
+                        SlotValue::File(f) => {
+                            let location = f.download_url.as_deref()?;
 
-                    let filetype = entry.path.rsplit('.').next().unwrap_or("txt");
+                            let filetype = f.path.rsplit('.').next().unwrap_or("txt");
 
-                    Some((
-                        key.clone(),
-                        // @reggie galaxy specific info
-                        serde_json::json!({
-                            "class": "File",
-                            "filetype": filetype,
-                            "location": location
-                        }),
-                    ))
+                            Some((
+                                key.clone(),
+                                // @reggie galaxy specific info
+                                serde_json::json!({
+                                    "class": "File",
+                                    "filetype": filetype,
+                                    "location": location
+                                }),
+                            ))
+                        }
+                    }
                 })
                 .collect();
 
@@ -657,20 +687,32 @@ impl Dispatcher for MockDispatcher {
             // }
             // ```
 
+            let LaunchInput::SlotsOnly(slots) = input else {
+                panic!("not possible.")
+            };
+
             // TODO:
-            let request_state: serde_json::Map<String, serde_json::Value> = files
+            let request_state: serde_json::Map<String, serde_json::Value> = slots
                 .iter()
                 .filter_map(|(key, entry)| {
-                    // VIP use the slot id as the key of the file list in the payload
-                    let location = entry.download_url.as_deref()?;
+                    match entry {
+                        SlotValue::Value(_) => {
+                            // FIXME: get values from rpc client
+                            todo!()
+                        }
+                        SlotValue::File(f) => {
+                            // VIP use the slot id as the key of the file list in the payload
+                            let location = f.download_url.as_deref()?;
 
-                    let slot_id = tool
-                        .slots
-                        .iter()
-                        .find(|s| s.name == *key)
-                        .map(|s| s.id.clone())?;
+                            let slot_id = tool
+                                .slots
+                                .iter()
+                                .find(|s| s.name == *key)
+                                .map(|s| s.id.clone())?;
 
-                    Some((slot_id, serde_json::Value::String(location.to_string())))
+                            Some((slot_id, serde_json::Value::String(location.to_string())))
+                        }
+                    }
                 })
                 .collect();
 
@@ -748,37 +790,118 @@ impl Dispatcher for MockDispatcher {
         } else if tool.types.contains(&"cernbox".to_string()) {
             let task_id = uuid::Uuid::new_v4();
 
+            let LaunchInput::SlotsAndFiles { slots, files } = input else {
+                panic!("not possible.")
+            };
+
             let domain = "qa.cernbox.cern.ch";
             let client = Client::builder().build()?;
-            let Some(share_with) = parameters.get("Shared With").map(|v| {
-                let serde_json::Value::String(v) = v.get_inner() else {
-                    unreachable!("must be a string")
-                };
-                v
+            let Some(share_with) = slots.get("Shared With").map(|v| match v {
+                SlotValue::File(_) => unreachable!("must be a value"),
+                SlotValue::Value(v) => {
+                    let serde_json::Value::String(v) = v else {
+                        unreachable!("must be a string")
+                    };
+                    v
+                }
             }) else {
                 unreachable!("'Share With' must be set")
             };
 
             // XXX: look at all fields here
             // ??, should name and description customized by user?
-            let owner = "rasmus.oscar.welander@egi.eu"; // ??, ready from auth token?
-            let sender_display_name = "Rasmus Oscar Welander"; // ??, read from auth token?
-                                                               // TODO: this needs to be constructed, and this is the main OCM trick.
-            let sender = "rasmus.oscar.welander@dev2.player.eosc-data-commons.eu";
+            let owner = "jusong.yu@egi.eu"; // ??, ready from auth token?
+            let sender_display_name = "Jusong Yu"; // ??, read from auth token?
+                                                   // TODO: this needs to be constructed, and this is the main OCM trick.
+            let sender = "jusong.yu@dev1.player.eosc-data-commons.eu";
 
-            fn create_rocrate(/*some inputs parameters*/) -> serde_json::Value {
-                todo!()
+            fn create_rocrate(files: &HashMap<RenameName, FileEntry>) -> serde_json::Value {
+                dbg!(files);
+                let mut graph: Vec<serde_json::Value> = Vec::new();
+                let mut has_part: Vec<serde_json::Value> = Vec::new();
+
+                // Take only first two files
+                for (i, (name, file)) in files.iter().enumerate() {
+                    let id = format!("#file-{}", i);
+
+                    has_part.push(json!({ "@id": id }));
+
+                    graph.push(json!({
+                        "@id": id,
+                        "@type": "File",
+                        // XXX: this should be rename_to
+                        "name": name.to_string(),
+                        // "description": file.description, // ?? need this??
+                        "encodingFormat": file.mime_type,
+                        "url": &file.download_url
+                    }));
+                }
+
+                // Root dataset
+                graph.insert(0, json!({
+                    "@id": "./",
+                    "@type": "Dataset",
+                    "name": "ScienceMesh Research Data Package",
+                    "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
+                    "datePublished": chrono::Utc::now().to_rfc3339(),
+                    "creator": { "@id": "#creator" },
+                    "runsOn": { "@id": "#destination" },
+                    "hasPart": has_part
+                }));
+
+                // Metadata descriptor
+                graph.push(json!({
+                    "@id": "ro-crate-metadata.json",
+                    "@type": "CreativeWork",
+                    "about": { "@id": "./" },
+                    "conformsTo": { "@id": "https://w3id.org/ro/crate/1.1" }
+                }));
+
+                // Static entities (keep your existing ones)
+                graph.push(json!({
+                    "@id": "#destination",
+                    "@type": "Service",
+                    "name": "ScienceMesh Service",
+                    "url": "https://qa.cernbox.cern.ch"
+                }));
+
+                // XXX: redundant information, record twice.
+                // The ro-crate format required by the cernbox is a subset of EDC ro-crate.
+                graph.push(json!({
+                    "@id": "#creator",
+                    "@type": "Person",
+                    "name": "Rasmus Oscar Welander",
+                    "userid": "rasmus.oscar.welander@egi.eu"
+                }));
+
+                graph.push(json!({
+                    "@id": "#sender",
+                    "@type": "Person",
+                    "name": "Rasmus Oscar Welander",
+                    "userid": "rasmus.oscar.welander@egi.eu"
+                }));
+
+                graph.push(json!({
+                    "@id": "#receiver",
+                    "@type": "Person",
+                    "userid": "rwelande@cernbox.cern.ch"
+                }));
+
+                json!({
+                    "@context": "https://w3id.org/ro/crate/1.1/context",
+                    "@graph": graph
+                })
             }
 
-            let rocrate = create_rocrate();
+            let rocrate = create_rocrate(files);
 
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({
                 "shareWith": format!("{share_with}@{domain}"),
                 "name": "ScienceMesh Research Data Package",
                 "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
-                "providerId": "n/a",
-                "resourceId": "n/a",
+                "providerId": &uuid::Uuid::new_v4(),
+                "resourceId": task_id,
                 "owner": owner,
                 "senderDisplayName": sender_display_name,
                 "sender": sender,
@@ -790,13 +913,14 @@ impl Dispatcher for MockDispatcher {
                 }
             );
 
+            println!("{}", serde_json::to_string_pretty(&project_data).unwrap());
+
             let api_url = format!("https://{domain}/ocm/shares");
             let resp = client.post(api_url).json(&project_data).send().await?;
 
             if !resp.status().is_success() {
                 dbg!("fail here");
                 let artifact = Artifact::FailedTool;
-                // TODO: use TaskHandler::new()
                 let task_handler = TaskHandler {
                     id: HandlerId(task_id),
                     user_id: UserId(uid.to_string()),
@@ -828,28 +952,85 @@ impl Dispatcher for MockDispatcher {
 
             Ok(task_id)
         } else if tool.types.contains(&"rrp".to_string()) {
+            //
+            //
+            // {
+            //     "type": "createFromExternalCatalog",
+            //     "image": "registry.example.com/repo2docker/jupyter:latest",
+            //     "environmentType": "repo2docker",
+            //     "name": "my-project",
+            //     "description": "Example project with all optional settings filled",
+            //     "resources": {
+            //       "cpu": 4.0,
+            //       "memMb": 8192
+            //     },
+            //     "dataMappingTemplate": [
+            //       { "type": "mountPoint", "name": "genome" },
+            //       {
+            //         "type": "directory",
+            //         "name": "data",
+            //         "children": [
+            //           { "type": "mountPoint", "name": "raw" }
+            //         ]
+            //       }
+            //     ],
+            //     "dataMapping": {
+            //       "genome": {
+            //         "type": "openbis",
+            //         "server": "https://openbis.example.com",
+            //         "permId": "20240101120000000-1",
+            //         "path": "sequences"
+            //       },
+            //       "data/raw": {
+            //         "type": "zenodo",
+            //         "doi": "10.5281/zenodo.1234567"
+            //       }
+            //     }
+            //   }
+
+            dbg!("should be here!");
             let task_id = uuid::Uuid::new_v4();
 
             let backend_url = "https://rrp-eosc.ethz.ch";
 
             let client = Client::builder().build()?;
-            let Some(image_name) = parameters.get("Image Name").map(|v| {
-                let serde_json::Value::String(v) = v.get_inner() else {
-                    unreachable!("must be a string")
-                };
-                v
-            }) else {
-                unreachable!("'Image Name' must be set")
+
+            // let LaunchInput::FilesOnly(files) = input else {
+            //     panic!("not possible.")
+            // };
+            let LaunchInput::DatasetOnly(url) = input else {
+                // FIXME: Files only is possible. UI should support set file and rename.
+                panic!("not possible")
             };
+            let doi = url.trim_start_matches("https://doi.org/");
+            dbg!(doi);
+            // doi = "10.5281/zenodo.20507550"
 
             // ---- CREATE PROJECT ----
+            // FIXME:: image name is from toolmeta
             let project_data = serde_json::json!({
                 "type": "createFromExternalCatalog",
-                "image": image_name,
-                // "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
+                "name": format!("eosc-{task_id}"),
                 "environmentType": "jupyterlab",
+                "dataMappingTemplate": [
+                  {
+                    "type": "directory",
+                    "name": "data",
+                    "children": [
+                      { "type": "mountPoint", "name": "raw" }
+                    ]
+                  }
+                ],
+                "dataMapping": {
+                    "data/raw": {
+                        "type": "zenodo",
+                        "doi": doi
+                    }
+                }
             });
 
+            // FIXME: start project and pass files into it
             let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
                 panic!("oidc_agent_token not found in env var")
             };
@@ -995,7 +1176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("info") // filter logs by level
         .init();
 
-    let addr = "[::1]:50051".parse()?;
+    let addr = "127.0.0.1:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
     // (however there is not too much query needed, just index visiting).
@@ -1004,8 +1185,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_src = Arc::new(DatahuggerDataSource::new());
     let data_relayer = DataRelayer::new(data_src);
 
-    let root_api = Url::from_str("http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1")
-        .expect("invalid url");
+    let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
+        .unwrap_or("https://dev.tools-registry.eosc-data-commons.eu/api/v1".to_string());
+
+    let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
     let tool_src_cloned = Arc::clone(&tool_src);
     let tool_srv = ToolDatabase::new(tool_src_cloned);

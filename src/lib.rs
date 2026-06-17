@@ -6,6 +6,7 @@ use datahugger::FileMeta;
 use futures_util::{StreamExt, TryStreamExt};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 
@@ -885,11 +886,14 @@ pub enum RuntimeKind {
 // - Here in the coordinator.
 // - In the matchmaker, it should showing different input text box for different types.
 // At the moment, I relay the string to UI.
+// TODO: (jyu) name -> display_name
+// TODO: (jyu) use enum slot_type, num/str/flag/text/file
 #[derive(Debug, Clone)]
 pub struct Slot {
     pub id: String,
     pub name: String,
     pub slot_type: String,
+    pub is_optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
@@ -899,8 +903,17 @@ impl From<Slot> for grpc::Slot {
             id: value.id,
             name: value.name,
             typ: value.slot_type,
+            is_optional: value.is_optional,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolKind {
+    DatasetOnly,
+    SlotsOnly,
+    FilesOnly,
+    SlotsAndFiles,
 }
 
 #[derive(Debug, Clone)]
@@ -913,6 +926,7 @@ pub struct ToolMeta {
     pub types: Vec<String>,
     pub description: String,
     pub slots: Vec<Slot>,
+    pub kind: ToolKind,
     // pub runtime: RuntimeMeta,
 }
 
@@ -920,12 +934,20 @@ impl From<ToolMeta> for grpc::ToolMeta {
     fn from(value: ToolMeta) -> Self {
         // XXX: this contains less info than the logic ToolMeta
         // If this is correct, rename it and maybe just pass an tool-id is enough??
+        let kind = match value.kind {
+            ToolKind::DatasetOnly => grpc::tool_meta::ToolKind::DatasetOnly,
+            ToolKind::SlotsOnly => grpc::tool_meta::ToolKind::SlotsOnly,
+            ToolKind::FilesOnly => grpc::tool_meta::ToolKind::FilesOnly,
+            ToolKind::SlotsAndFiles => grpc::tool_meta::ToolKind::SlotsAndFiles,
+        };
+
         grpc::ToolMeta {
             id: value.id,
             version: value.version,
             name: value.name,
             description: value.description,
             slots: value.slots.into_iter().map(|s| s.into()).collect(),
+            kind: kind.into(),
         }
     }
 }
@@ -979,25 +1001,46 @@ impl Value {
     }
 }
 
-impl From<grpc::TypedValue> for Value {
-    fn from(value: grpc::TypedValue) -> Self {
-        match value.kind {
-            Some(kind) => match kind {
-                grpc::typed_value::Kind::StringValue(v) => Self {
-                    inner: serde_json::Value::String(v),
-                },
-                grpc::typed_value::Kind::NumberValue(v) => Self {
-                    inner: serde_json::Number::from_f64(v)
-                        .map(serde_json::Value::Number)
-                        .expect("Invalid float for JSON (NaN or Infinity)"),
-                },
-                grpc::typed_value::Kind::BoolValue(v) => Self {
-                    inner: serde_json::Value::Bool(v),
-                },
-            },
-            None => panic!("TypedValue.kind is None"),
-        }
-    }
+// impl From<grpc::TypedValue> for Value {
+//     fn from(value: grpc::TypedValue) -> Self {
+//         match value.kind {
+//             Some(kind) => match kind {
+//                 grpc::typed_value::Kind::StringValue(v) => Self {
+//                     inner: serde_json::Value::String(v),
+//                 },
+//                 grpc::typed_value::Kind::NumberValue(v) => Self {
+//                     inner: serde_json::Number::from_f64(v)
+//                         .map(serde_json::Value::Number)
+//                         .expect("Invalid float for JSON (NaN or Infinity)"),
+//                 },
+//                 grpc::typed_value::Kind::BoolValue(v) => Self {
+//                     inner: serde_json::Value::Bool(v),
+//                 },
+//                 grpc::typed_value::Kind::File(file_entry) => todo!(),
+//             },
+//             None => panic!("TypedValue.kind is None"),
+//         }
+//     }
+// }
+
+pub struct AuthToken(String);
+
+pub type SlotName = String;
+pub type RenameName = String;
+
+pub enum SlotValue {
+    Value(serde_json::Value),
+    File(FileEntry),
+}
+
+pub enum LaunchInput {
+    DatasetOnly(String),
+    SlotsOnly(HashMap<SlotName, SlotValue>),
+    FilesOnly(Vec<FileEntry>),
+    SlotsAndFiles {
+        slots: HashMap<SlotName, SlotValue>,
+        files: HashMap<RenameName, FileEntry>,
+    },
 }
 
 #[async_trait::async_trait]
@@ -1007,11 +1050,10 @@ pub trait Dispatcher: Send + Sync + 'static {
     // protobuf. Same for ToolService etc.
     async fn launch(
         &self,
-        uid: &str,
+        uid: &str, //user id
+        token: &AuthToken,
         tool: &ToolMeta,
-        dataset: &str,
-        parameters: &HashMap<String, Value>,
-        files: &HashMap<String, FileEntry>,
+        input: &LaunchInput,
     ) -> anyhow::Result<Uuid>;
     async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact>;
     /// get status of a tool from its handler id.
@@ -1091,6 +1133,20 @@ pub fn create_token() -> String {
     .unwrap()
 }
 
+impl From<grpc::TypedValue> for SlotValue {
+    fn from(value: grpc::TypedValue) -> Self {
+        match value.kind {
+            Some(grpc::typed_value::Kind::BoolValue(v)) => SlotValue::Value(JsonValue::Bool(v)),
+            Some(grpc::typed_value::Kind::NumberValue(v)) => SlotValue::Value(JsonValue::Number(
+                serde_json::Number::from_f64(v).expect("should be a f64"),
+            )),
+            Some(grpc::typed_value::Kind::StringValue(v)) => SlotValue::Value(JsonValue::String(v)),
+            Some(grpc::typed_value::Kind::File(entry)) => SlotValue::File(entry.into()),
+            None => panic!("didn't get typed value"),
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl DataplayerService for Dataplayer {
     type MonitorStateStream = ReceiverStream<Result<MonitorStateResponse, Status>>;
@@ -1103,32 +1159,64 @@ impl DataplayerService for Dataplayer {
         let user = get_user_from_token(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
-        let file_slots_mapping = &req
-            .file_slots_mapping
-            .clone()
-            .into_iter()
-            .map(|(k, v)| (k, v.into()))
-            .collect();
 
-        let value_slots_mapping = &req
-            .value_slots_mapping
+        let slots = req
+            .slots_mapping
             .clone()
             .into_iter()
-            .map(|(k, v)| (k, v.into()))
+            .map(|(k, v)| {
+                let val = match v.kind {
+                    Some(kind) => match kind {
+                        grpc::typed_value::Kind::StringValue(v) => {
+                            SlotValue::Value(JsonValue::String(v))
+                        }
+                        grpc::typed_value::Kind::NumberValue(v) => SlotValue::Value(
+                            JsonValue::Number(serde_json::Number::from_f64(v).unwrap()),
+                        ),
+                        grpc::typed_value::Kind::BoolValue(v) => {
+                            SlotValue::Value(JsonValue::Bool(v))
+                        }
+                        grpc::typed_value::Kind::File(file_entry) => {
+                            SlotValue::File(file_entry.into())
+                        }
+                    },
+                    None => panic!("TypedValue.kind is None"),
+                };
+                (k, val)
+            })
+            .collect::<HashMap<SlotName, SlotValue>>();
+
+        let files = req
+            .files
+            .clone()
+            .into_iter()
+            .map(|(k, f)| (k, f.into()))
             .collect();
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
-        let dataset = &req.dataset;
+
+        let launch_inp = match tool_meta.kind {
+            ToolKind::DatasetOnly => LaunchInput::DatasetOnly(req.dataset.clone()),
+            ToolKind::SlotsOnly => LaunchInput::SlotsOnly(slots),
+            ToolKind::FilesOnly => {
+                todo!()
+            }
+            ToolKind::SlotsAndFiles => {
+                // FIXME: for CernBox cases
+                LaunchInput::SlotsAndFiles { slots, files }
+            }
+        };
+
+        // FIXME: bring this back.
+        //
+        // let dataset = &req.dataset;
+
+        // FIXME: use real token
+        let fake_token = AuthToken("xxtttt".to_string());
 
         let task_id = self
             .dispatcher
-            .launch(
-                &user,
-                &tool_meta,
-                dataset,
-                value_slots_mapping,
-                file_slots_mapping,
-            )
+            .launch(&user, &fake_token, &tool_meta, &launch_inp)
             .await
             .unwrap();
 
