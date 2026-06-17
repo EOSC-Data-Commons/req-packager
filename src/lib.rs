@@ -752,9 +752,8 @@ impl ToolService for ToolDatabase {
             .tool_source
             .get_tool(&req.id)
             .await
-            // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
             // retry or report mechenism.
-            .map_err(|err| Status::internal(format!("not find tool, get_tool, {err}")))?;
+            .map_err(|err| Status::not_found(format!("not find tool, get_tool, {err}")))?;
         Ok(Response::new(ToolResponse {
             tool: Some(tool.into()),
         }))
@@ -773,15 +772,9 @@ impl ToolService for ToolDatabase {
             .map(|f| f.into())
             .collect::<Vec<_>>();
 
-        let tools = self
-            .tool_source
-            .find_tools(&files)
-            .await
-            // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
-            // retry or report mechenism.
-            .map_err(|err| {
-                Status::internal(format!("not find tool, match_tools_by_data, {err}"))
-            })?;
+        let tools = self.tool_source.find_tools(&files).await.map_err(|err| {
+            Status::not_found(format!("not find tool, match_tools_by_data, {err}"))
+        })?;
         // tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
@@ -802,10 +795,8 @@ impl ToolService for ToolDatabase {
             .tool_source
             .search_tools_by_text(text)
             .await
-            // FIXME: Status::internal is too much, status code can granually deduct from API call errors, and setting
-            // retry or report mechenism.
             .map_err(|err| {
-                Status::internal(format!("not find tool, search_tools_by_text, {err}"))
+                Status::not_found(format!("not find tool, search_tools_by_text, {err}"))
             })?;
         tracing::info!("tools: {:?}", tools);
         let tools = tools
