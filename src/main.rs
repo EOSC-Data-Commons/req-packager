@@ -20,6 +20,7 @@ use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
     Client, ClientBuilder,
 };
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tonic_health::server::HealthReporter;
@@ -59,25 +60,21 @@ impl CrawlFileExt for datahugger::Dataset {
         mp: impl ProgressManager,
     ) -> BoxStream<'static, Result<FileEntry, Exn<CrawlerError>>> {
         let root_dir = self.root_dir();
-        crawl(
-            client.clone(),
-            Arc::clone(&self.backend),
-            root_dir,
-            mp.clone(),
-        )
-        .filter_map(|res| async move {
-            match res {
-                // TODO: need dir as well for the layout in the UI.
-                Ok(Entry::Dir(_)) => None,
-                Ok(Entry::File(f)) => {
-                    let f: FileEntry = f.into();
-                    Some(Ok(f))
+        let client = ClientWithMiddleware::new(client.clone(), []);
+        crawl(client, Arc::clone(&self.backend), root_dir, mp.clone())
+            .filter_map(|res| async move {
+                match res {
+                    // TODO: need dir as well for the layout in the UI.
+                    Ok(Entry::Dir(_)) => None,
+                    Ok(Entry::File(f)) => {
+                        let f: FileEntry = f.into();
+                        Some(Ok(f))
+                    }
+                    Ok(Entry::Zip(_)) => None,
+                    Err(e) => Some(Err(e)),
                 }
-                Ok(Entry::Zip(_)) => None,
-                Err(e) => Some(Err(e)),
-            }
-        })
-        .boxed()
+            })
+            .boxed()
     }
 }
 
@@ -218,13 +215,35 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
         ToolMeta {
             id: "::st:002".to_string(),
             version: "v0".to_string(),
-            name: "Reproduciple Research Platform (RRP)".to_string(),
+            name: "RRP - Cell doubling time from microscopy images".to_string(),
             uri: "https://rrp-eosc.ethz.ch/".to_string(),
-            types: vec!["general".to_string(), "rrp".to_string()],
-            description: "RRP as genenal tool".to_string(),
-            slots: vec![],
+            types: vec!["dataset url".to_string(), "rrp".to_string()],
+            description: "The Jupyter notebook provided by this RRP project takes two bright-field
+microscopy images as input, performs a cell segmentation to determine the
+respective cell counts, and from the time elapsed between the images calculates
+the cell doubling time, which is a measure of population growth."
+                .to_string(),
+            slots: vec![
+                Slot {
+                    id: "image_0".to_string(),
+                    name: "Image 0".to_string(),
+                    slot_type: "file".to_string(),
+                    is_optional: false,
+                },
+                Slot {
+                    id: "image_1".to_string(),
+                    name: "Image 1".to_string(),
+                    slot_type: "file".to_string(),
+                    is_optional: false,
+                },
+                Slot {
+                    id: "docker_image".to_string(),
+                    name: "Docker Image".to_string(),
+                    slot_type: "string".to_string(),
+                    is_optional: false,
+                },
+            ],
             kind: ToolKind::DatasetOnly,
-            // raw_definition: json!({}),
         },
         ToolMeta {
             id: "::st:003".to_string(),
@@ -695,22 +714,21 @@ impl Dispatcher for MockDispatcher {
             let request_state: serde_json::Map<String, serde_json::Value> = slots
                 .iter()
                 .filter_map(|(key, entry)| {
+                    let slot_id = tool
+                        .slots
+                        .iter()
+                        .find(|s| s.name == *key)
+                        .map(|s| s.id.clone())?;
                     match entry {
-                        SlotValue::Value(_) => {
-                            // FIXME: get values from rpc client
-                            todo!()
+                        SlotValue::Value(v) => {
+                            Some((slot_id, v.clone()))
                         }
                         SlotValue::File(f) => {
                             // VIP use the slot id as the key of the file list in the payload
                             let location = f.download_url.as_deref()?;
 
-                            let slot_id = tool
-                                .slots
-                                .iter()
-                                .find(|s| s.name == *key)
-                                .map(|s| s.id.clone())?;
-
-                            Some((slot_id, serde_json::Value::String(location.to_string())))
+                            let v = serde_json::Value::String(location.to_string());
+                            Some((slot_id, v))
                         }
                     }
                 })

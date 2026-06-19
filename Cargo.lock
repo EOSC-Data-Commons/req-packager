@@ -520,8 +520,6 @@ dependencies = [
 [[package]]
 name = "datahugger"
 version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33864e7d7280cf8666ae785b69fe65d952412be87fdf5a4f64b995f469bdb3fc"
 dependencies = [
  "async-recursion",
  "async-stream",
@@ -541,6 +539,7 @@ dependencies = [
  "native-tls",
  "quick-xml",
  "reqwest",
+ "reqwest-middleware",
  "roxmltree",
  "serde",
  "serde_json",
@@ -2001,9 +2000,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
+version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
 dependencies = [
  "memchr",
 ]
@@ -2213,6 +2212,7 @@ dependencies = [
  "prost-types",
  "rand 0.10.0",
  "reqwest",
+ "reqwest-middleware",
  "serde",
  "serde_json",
  "tera",
@@ -2275,6 +2275,21 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "reqwest-middleware"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07bc3f1384cffa4f274dad2d4ddd73aed32fed8f786d96c6be8aa4e5fd3c3b58"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.18",
+ "tower-service",
 ]
 
 [[package]]
