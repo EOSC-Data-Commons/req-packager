@@ -519,7 +519,9 @@ dependencies = [
 
 [[package]]
 name = "datahugger"
-version = "0.6.3"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "212ce308aea22606ec78c7f2675c6684cb1910e2e0acf2f7304934ba67ddcbba"
 dependencies = [
  "async-recursion",
  "async-stream",

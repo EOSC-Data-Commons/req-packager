@@ -1022,14 +1022,16 @@ pub enum SlotValue {
     File(FileEntry),
 }
 
-pub enum LaunchInput {
-    DatasetOnly(String),
-    SlotsOnly(HashMap<SlotName, SlotValue>),
-    FilesOnly(Vec<FileEntry>),
-    SlotsAndFiles {
-        slots: HashMap<SlotName, SlotValue>,
-        files: HashMap<RenameName, FileEntry>,
-    },
+pub struct DatasetHandle {
+    pub url: String,
+    pub title: String,
+    pub description: String,
+}
+
+pub struct LaunchInput {
+    pub dataset: DatasetHandle,
+    pub slots: HashMap<SlotName, SlotValue>,
+    pub files: HashMap<RenameName, FileEntry>,
 }
 
 #[async_trait::async_trait]
@@ -1039,8 +1041,7 @@ pub trait Dispatcher: Send + Sync + 'static {
     // protobuf. Same for ToolService etc.
     async fn launch(
         &self,
-        uid: &str, //user id
-        token: &AuthToken,
+        claims: &Claims,
         tool: &ToolMeta,
         input: &LaunchInput,
     ) -> anyhow::Result<Uuid>;
@@ -1075,7 +1076,9 @@ pub enum Artifact {
     FailedTool,
 }
 
-fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
+fn get_token_claims_from_request<T>(req: &Request<T>) -> Result<Claims, Status> {
+    // TODO: (jyu) it might be not good just return Claims, but make extral call to get
+    // profile/email etc, if possible.
     let auth_header = req
         .metadata()
         .get("authorization")
@@ -1090,8 +1093,8 @@ fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
     }
 
     let token = &auth_str[7..]; // strip "Bearer "
-
     dbg!(token);
+
     // Decode JWT
     // NOTE: no need because coordinator is only accessable from inside cyfronet.
     let token_data =
@@ -1102,14 +1105,14 @@ fn get_user_from_token<T>(req: &Request<T>) -> Result<String, Status> {
     // let token_data = decode::<Claims>(token, &decoding_key, &Validation::new(Algorithm::HS256))
     //     .map_err(|_| Status::unauthenticated("Invalid token"))?;
 
-    Ok(token_data.claims.sub)
+    Ok(token_data.claims)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct Claims {
-    sub: String,
-    preferred_username: String,
-    exp: usize,
+pub struct Claims {
+    pub sub: String,
+    pub preferred_username: String,
+    pub exp: usize,
 }
 
 impl From<grpc::TypedValue> for SlotValue {
@@ -1135,7 +1138,7 @@ impl DataplayerService for Dataplayer {
         req: Request<LaunchToolRequest>,
     ) -> Result<Response<LaunchToolResponse>, Status> {
         tracing::info!("Got a request to launch tool: {req:?}");
-        let user = get_user_from_token(&req).unwrap();
+        let claims = get_token_claims_from_request(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
 
@@ -1174,16 +1177,15 @@ impl DataplayerService for Dataplayer {
 
         let tool_meta = self.tool_source.get_tool(id).await.unwrap();
 
-        let launch_inp = match tool_meta.kind {
-            ToolKind::DatasetOnly => LaunchInput::DatasetOnly(req.dataset.clone()),
-            ToolKind::SlotsOnly => LaunchInput::SlotsOnly(slots),
-            ToolKind::FilesOnly => {
-                todo!()
-            }
-            ToolKind::SlotsAndFiles => {
-                // FIXME: for CernBox cases
-                LaunchInput::SlotsAndFiles { slots, files }
-            }
+        let hdataset = req.dataset.clone().expect("valid dataset handle");
+        let launch_inp = LaunchInput {
+            dataset: DatasetHandle {
+                url: hdataset.url,
+                title: hdataset.title,
+                description: hdataset.description,
+            },
+            slots,
+            files,
         };
 
         // FIXME: bring this back.
@@ -1191,11 +1193,10 @@ impl DataplayerService for Dataplayer {
         // let dataset = &req.dataset;
 
         // FIXME: use real token
-        let fake_token = AuthToken("xxtttt".to_string());
 
         let task_id = self
             .dispatcher
-            .launch(&user, &fake_token, &tool_meta, &launch_inp)
+            .launch(&claims, &tool_meta, &launch_inp)
             .await
             .unwrap();
 
@@ -1208,8 +1209,8 @@ impl DataplayerService for Dataplayer {
         &self,
         req: Request<QueryUserRequest>,
     ) -> Result<Response<QueryUserResponse>, Status> {
-        let user = get_user_from_token(&req).unwrap();
-        let tools = self.dispatcher.query_tasks(&user).await.unwrap();
+        let claims = get_token_claims_from_request(&req).unwrap();
+        let tools = self.dispatcher.query_tasks(&claims.sub).await.unwrap();
         let tools = tools.into_iter().map(|t| t.into()).collect::<Vec<_>>();
         Ok(Response::new(QueryUserResponse { ths: tools }))
     }

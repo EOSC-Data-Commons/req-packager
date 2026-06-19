@@ -420,6 +420,15 @@ pub mod typed_value {
         File(super::FileEntry),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DatasetHandle {
+    #[prost(string, tag = "1")]
+    pub url: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub title: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub description: ::prost::alloc::string::String,
+}
 /// XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
 /// But in fact, some tool need config files that is independent of data files passed in.
 /// We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool.
@@ -430,8 +439,8 @@ pub mod typed_value {
 pub struct LaunchToolRequest {
     #[prost(string, tag = "1")]
     pub tool_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub dataset: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub dataset: ::core::option::Option<DatasetHandle>,
     #[prost(map = "string, message", tag = "3")]
     pub slots_mapping: ::std::collections::HashMap<
         ::prost::alloc::string::String,

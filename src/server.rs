@@ -3,16 +3,9 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    grpc::{
-        self,
-        dataplayer_service_server::DataplayerServiceServer,
-        dataset_service_server::DatasetServiceServer,
-        tool_service_server::{ToolService, ToolServiceServer},
-        tool_state, ToolTaskHandler,
-    },
-    Artifact, AuthToken, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
-    DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchInput, LaunchRequset, TaskHandler,
-    ToolDatabase, ToolKind, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, Value,
+    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchInput, LaunchRequset, TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, Value, grpc::{
+        self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
+    }
 };
 
 use chrono::{DateTime, Duration, Utc};
@@ -140,8 +133,7 @@ impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
     async fn launch(
         &self,
-        uid: &str, //user id
-        token: &AuthToken,
+        claims: &Claims,
         tool: &ToolMeta,
         input: &LaunchInput,
     ) -> anyhow::Result<Uuid> {
@@ -164,7 +156,7 @@ impl Dispatcher for MockDispatcher {
         // TODO: use TaskHandler::new()
         let task_handler = TaskHandler {
             id: HandlerId(id),
-            user_id: UserId(uid.to_string()),
+            user_id: UserId(claims.sub.to_string()),
             state: ToolState::Ready,
             artifact,
         };

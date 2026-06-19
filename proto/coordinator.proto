@@ -249,6 +249,12 @@ message TypedValue {
   }
 }
 
+message DatasetHandle {
+  string url = 1;
+  string title = 2;
+  string description = 3;
+}
+
 // XXX: this is already an abstract with assumption that the tool need and only need files as input to start.
 // But in fact, some tool need config files that is independent of data files passed in.
 // We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool. 
@@ -257,7 +263,7 @@ message TypedValue {
 // dataset is the url of dataset handler, this should be resolvable by datahugger.
 message LaunchToolRequest {
   string tool_id = 1;
-  string dataset = 2;
+  DatasetHandle dataset = 2;
   map<string, TypedValue> slots_mapping = 3;
   map<string, FileEntry> files = 4;
 }

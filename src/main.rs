@@ -12,9 +12,9 @@ use req_packager::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
-    Artifact, AuthToken, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry,
-    HandlerId, LaunchInput, RenameName, Slot, SlotValue, TaskHandler, ToolDatabase, ToolKind,
-    ToolMeta, ToolSource, ToolState, UserId,
+    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
+    FileEntry, HandlerId, LaunchInput, RenameName, Slot, SlotValue, TaskHandler, ToolDatabase,
+    ToolKind, ToolMeta, ToolSource, ToolState, UserId,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -428,8 +428,7 @@ impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
     async fn launch(
         &self,
-        uid: &str, //user id
-        token: &AuthToken,
+        claims: &Claims,
         tool: &ToolMeta,
         input: &LaunchInput,
     ) -> anyhow::Result<Uuid> {
@@ -562,6 +561,8 @@ impl Dispatcher for MockDispatcher {
             name: String,
         }
 
+        let uid = &claims.sub;
+
         if tool.types.contains(&"galaxy_workflow".to_string())
             && tool.types.contains(&"workflowhub".to_string())
         {
@@ -593,9 +594,7 @@ impl Dispatcher for MockDispatcher {
                 workflow_id, version[0],
             );
 
-            let LaunchInput::SlotsOnly(slots) = input else {
-                panic!("not possible.")
-            };
+            let slots = &input.slots;
 
             let request_state: serde_json::Map<String, serde_json::Value> = slots
                 .iter()
@@ -706,9 +705,7 @@ impl Dispatcher for MockDispatcher {
             // }
             // ```
 
-            let LaunchInput::SlotsOnly(slots) = input else {
-                panic!("not possible.")
-            };
+            let slots = &input.slots;
 
             // TODO:
             let request_state: serde_json::Map<String, serde_json::Value> = slots
@@ -720,9 +717,7 @@ impl Dispatcher for MockDispatcher {
                         .find(|s| s.name == *key)
                         .map(|s| s.id.clone())?;
                     match entry {
-                        SlotValue::Value(v) => {
-                            Some((slot_id, v.clone()))
-                        }
+                        SlotValue::Value(v) => Some((slot_id, v.clone())),
                         SlotValue::File(f) => {
                             // VIP use the slot id as the key of the file list in the payload
                             let location = f.download_url.as_deref()?;
@@ -808,9 +803,8 @@ impl Dispatcher for MockDispatcher {
         } else if tool.types.contains(&"cernbox".to_string()) {
             let task_id = uuid::Uuid::new_v4();
 
-            let LaunchInput::SlotsAndFiles { slots, files } = input else {
-                panic!("not possible.")
-            };
+            let files = &input.files;
+            let slots = &input.slots;
 
             let domain = "qa.cernbox.cern.ch";
             let client = Client::builder().build()?;
@@ -825,16 +819,17 @@ impl Dispatcher for MockDispatcher {
             }) else {
                 unreachable!("'Share With' must be set")
             };
+            let share_with = format!("{share_with}@{domain}");
 
             // XXX: look at all fields here
             // ??, should name and description customized by user?
-            let owner = "jusong.yu@egi.eu"; // ??, ready from auth token?
-            let sender_display_name = "Jusong Yu"; // ??, read from auth token?
-                                                   // TODO: this needs to be constructed, and this is the main OCM trick.
+            let owner = &claims.sub;
+            let sender_display_name = &claims.preferred_username;
+
+            // TODO: this needs to be constructed, and this is the main OCM trick.
             let sender = "jusong.yu@dev1.player.eosc-data-commons.eu";
 
-            fn create_rocrate(files: &HashMap<RenameName, FileEntry>) -> serde_json::Value {
-                dbg!(files);
+            fn create_rocrate(files: &HashMap<RenameName, FileEntry>, share_with: &str) -> serde_json::Value {
                 let mut graph: Vec<serde_json::Value> = Vec::new();
                 let mut has_part: Vec<serde_json::Value> = Vec::new();
 
@@ -888,21 +883,21 @@ impl Dispatcher for MockDispatcher {
                 graph.push(json!({
                     "@id": "#creator",
                     "@type": "Person",
-                    "name": "Rasmus Oscar Welander",
-                    "userid": "rasmus.oscar.welander@egi.eu"
+                    "name": "TBD",
+                    "userid": "TBD",
                 }));
 
                 graph.push(json!({
                     "@id": "#sender",
                     "@type": "Person",
-                    "name": "Rasmus Oscar Welander",
-                    "userid": "rasmus.oscar.welander@egi.eu"
+                    "name": "TBD",
+                    "userid": "TBD",
                 }));
 
                 graph.push(json!({
                     "@id": "#receiver",
                     "@type": "Person",
-                    "userid": "rwelande@cernbox.cern.ch"
+                    "userid": share_with,
                 }));
 
                 json!({
@@ -911,13 +906,15 @@ impl Dispatcher for MockDispatcher {
                 })
             }
 
-            let rocrate = create_rocrate(files);
+            let rocrate = create_rocrate(files, &share_with);
+            let dataset_title = &input.dataset.title;
 
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({
-                "shareWith": format!("{share_with}@{domain}"),
-                "name": "ScienceMesh Research Data Package",
-                "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
+                "shareWith": share_with,
+                "name": dataset_title,
+                // XXX: (jyu) not passed from launch tool call from upstream matchmaker
+                "description": "",
                 "providerId": &uuid::Uuid::new_v4(),
                 "resourceId": task_id,
                 "owner": owner,
@@ -952,7 +949,7 @@ impl Dispatcher for MockDispatcher {
                 return Ok(task_id);
             }
 
-            let callback_url = Url::from_str("https://cernbox.cern.ch").expect("valid url");
+            let callback_url = Url::from_str("https://qa.cernbox.cern.ch").expect("valid url");
 
             let artifact = Artifact::HostedTool {
                 callback: callback_url,
@@ -1016,11 +1013,8 @@ impl Dispatcher for MockDispatcher {
             // let LaunchInput::FilesOnly(files) = input else {
             //     panic!("not possible.")
             // };
-            let LaunchInput::DatasetOnly(url) = input else {
-                // FIXME: Files only is possible. UI should support set file and rename.
-                panic!("not possible")
-            };
-            let doi = url.trim_start_matches("https://doi.org/");
+            let hdataset = &input.dataset;
+            let doi = hdataset.url.trim_start_matches("https://doi.org/");
             dbg!(doi);
             // doi = "10.5281/zenodo.20507550"
 

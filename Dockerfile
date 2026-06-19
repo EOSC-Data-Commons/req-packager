@@ -11,9 +11,11 @@ RUN apt-get update && apt-get install -y \
 RUN cargo build --release --bin rp
 
 # ---- Runtime stage ----
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y libssl3 && rm -rf /var/lib/apt/lists/*
 
 # Copy binary (replace with your binary name)
 COPY --from=builder /app/target/release/rp /usr/local/bin/rp
