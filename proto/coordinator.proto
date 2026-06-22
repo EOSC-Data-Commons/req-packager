@@ -259,13 +259,19 @@ message DatasetHandle {
 // But in fact, some tool need config files that is independent of data files passed in.
 // We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool. 
 // This interface high likely will be full re-definded.
-//
-// dataset is the url of dataset handler, this should be resolvable by datahugger.
+message UserInfo {
+  string sub = 1;
+  string email = 2;
+  optional string name = 3;
+  optional string preferred_username = 4;
+}
+
 message LaunchToolRequest {
-  string tool_id = 1;
-  DatasetHandle dataset = 2;
-  map<string, TypedValue> slots_mapping = 3;
-  map<string, FileEntry> files = 4;
+  UserInfo user_info = 1;
+  string tool_id = 2;
+  DatasetHandle dataset = 3;
+  map<string, TypedValue> slots_mapping = 4;
+  map<string, FileEntry> files = 5;
 }
 
 message UserId {

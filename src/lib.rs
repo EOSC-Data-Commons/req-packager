@@ -1034,6 +1034,28 @@ pub struct LaunchInput {
     pub files: HashMap<RenameName, FileEntry>,
 }
 
+// TODO: (jyu) use more expressive types instead of String.
+pub struct UserInfo {
+    pub sub: String,
+    pub email: String,
+    pub name: String,
+    pub preferred_username: String,
+}
+
+// TODO: (jyu) is name and preferred_username fully optional? Should I always fallback to email?
+impl From<grpc::UserInfo> for UserInfo {
+    fn from(value: grpc::UserInfo) -> Self {
+        UserInfo {
+            sub: value.sub,
+            email: value.email,
+            name: value.name.unwrap_or("<unset>".to_string()),
+            preferred_username: value.preferred_username.unwrap_or("<unset>".to_string()),
+        }
+    }
+}
+
+pub type RawToken = String;
+
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync + 'static {
     // TODO: for all types involved in the inner traits, should use mirror type of grpc type
@@ -1041,7 +1063,8 @@ pub trait Dispatcher: Send + Sync + 'static {
     // protobuf. Same for ToolService etc.
     async fn launch(
         &self,
-        claims: &Claims,
+        user_info: &UserInfo,
+        token: &RawToken,
         tool: &ToolMeta,
         input: &LaunchInput,
     ) -> anyhow::Result<Uuid>;
@@ -1076,7 +1099,7 @@ pub enum Artifact {
     FailedTool,
 }
 
-fn get_token_claims_from_request<T>(req: &Request<T>) -> Result<Claims, Status> {
+fn get_token_and_claims_from_request<T>(req: &Request<T>) -> Result<(String, Claims), Status> {
     // TODO: (jyu) it might be not good just return Claims, but make extral call to get
     // profile/email etc, if possible.
     let auth_header = req
@@ -1093,7 +1116,6 @@ fn get_token_claims_from_request<T>(req: &Request<T>) -> Result<Claims, Status> 
     }
 
     let token = &auth_str[7..]; // strip "Bearer "
-    dbg!(token);
 
     // Decode JWT
     // NOTE: no need because coordinator is only accessable from inside cyfronet.
@@ -1105,7 +1127,7 @@ fn get_token_claims_from_request<T>(req: &Request<T>) -> Result<Claims, Status> 
     // let token_data = decode::<Claims>(token, &decoding_key, &Validation::new(Algorithm::HS256))
     //     .map_err(|_| Status::unauthenticated("Invalid token"))?;
 
-    Ok(token_data.claims)
+    Ok((token.to_string(), token_data.claims))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1138,7 +1160,7 @@ impl DataplayerService for Dataplayer {
         req: Request<LaunchToolRequest>,
     ) -> Result<Response<LaunchToolResponse>, Status> {
         tracing::info!("Got a request to launch tool: {req:?}");
-        let claims = get_token_claims_from_request(&req).unwrap();
+        let (token, claims) = get_token_and_claims_from_request(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
 
@@ -1187,16 +1209,11 @@ impl DataplayerService for Dataplayer {
             slots,
             files,
         };
-
-        // FIXME: bring this back.
-        //
-        // let dataset = &req.dataset;
-
-        // FIXME: use real token
+        let grpc_user_info = req.user_info.clone().expect("no user_info passing");
 
         let task_id = self
             .dispatcher
-            .launch(&claims, &tool_meta, &launch_inp)
+            .launch(&grpc_user_info.into(), &token, &tool_meta, &launch_inp)
             .await
             .unwrap();
 
@@ -1209,7 +1226,7 @@ impl DataplayerService for Dataplayer {
         &self,
         req: Request<QueryUserRequest>,
     ) -> Result<Response<QueryUserResponse>, Status> {
-        let claims = get_token_claims_from_request(&req).unwrap();
+        let (token, claims) = get_token_and_claims_from_request(&req).unwrap();
         let tools = self.dispatcher.query_tasks(&claims.sub).await.unwrap();
         let tools = tools.into_iter().map(|t| t.into()).collect::<Vec<_>>();
         Ok(Response::new(QueryUserResponse { ths: tools }))

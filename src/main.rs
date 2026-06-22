@@ -13,8 +13,8 @@ use req_packager::{
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
     Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
-    FileEntry, HandlerId, LaunchInput, RenameName, Slot, SlotValue, TaskHandler, ToolDatabase,
-    ToolKind, ToolMeta, ToolSource, ToolState, UserId,
+    FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotValue, TaskHandler,
+    ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -285,7 +285,7 @@ impl ToolSource for ToolRegistry {
                     .map(|s| s.into())
                     .collect::<Vec<_>>();
 
-                let kind = if resp.types.contains(&"dataset".to_string()) {
+                let kind = if resp.types.contains(&"data access".to_string()) {
                     ToolKind::SlotsAndFiles
                 } else {
                     ToolKind::SlotsOnly
@@ -367,7 +367,7 @@ impl ToolSource for ToolRegistry {
                     .map(|s| s.into())
                     .collect::<Vec<_>>();
 
-                let kind = if resp.types.contains(&"dataset".to_string()) {
+                let kind = if resp.types.contains(&"data access".to_string()) {
                     ToolKind::SlotsAndFiles
                 } else {
                     ToolKind::SlotsOnly
@@ -401,7 +401,8 @@ impl ToolSource for ToolRegistry {
             .map(|s| s.into())
             .collect::<Vec<_>>();
 
-        let kind = if resp.types.contains(&"dataset".to_string()) {
+        // NOTE: (jyu) need to document this so when new VRE onboarding it knows which type to set.
+        let kind = if resp.types.contains(&"data access".to_string()) {
             ToolKind::SlotsAndFiles
         } else {
             ToolKind::SlotsOnly
@@ -437,7 +438,8 @@ impl Dispatcher for MockDispatcher {
     // // launch a vre with the launch request, return the callback url when it is ready
     async fn launch(
         &self,
-        claims: &Claims,
+        user_info: &UserInfo,
+        token: &RawToken,
         tool: &ToolMeta,
         input: &LaunchInput,
     ) -> anyhow::Result<Uuid> {
@@ -570,7 +572,7 @@ impl Dispatcher for MockDispatcher {
             name: String,
         }
 
-        let uid = &claims.sub;
+        let uid = &user_info.sub;
 
         if tool.types.contains(&"galaxy_workflow".to_string())
             && tool.types.contains(&"workflowhub".to_string())
@@ -832,15 +834,21 @@ impl Dispatcher for MockDispatcher {
 
             // XXX: look at all fields here
             // ??, should name and description customized by user?
-            let owner = &claims.sub;
-            let sender_display_name = &claims.preferred_username;
+            let owner = &user_info.sub;
+            let email = &user_info.email;
+
+            // TODO: (jyu) 'name' and 'preferred_username' is optinal, should I implement fallback logic?
+            let sender = email.split('@').collect::<Vec<_>>()[0];
+            // let sender_display_name = &user_info.preferred_username;
+            let sender_display_name = sender;
 
             // TODO: this needs to be constructed, and this is the main OCM trick.
-            let sender = "jusong.yu@dev1.player.eosc-data-commons.eu";
+            let sender = format!("{sender}@grpc.eosc-coordinator.ethz.ch");
 
             fn create_rocrate(
                 files: &HashMap<RenameName, FileEntry>,
                 share_with: &str,
+                title: &str,
             ) -> serde_json::Value {
                 let mut graph: Vec<serde_json::Value> = Vec::new();
                 let mut has_part: Vec<serde_json::Value> = Vec::new();
@@ -866,8 +874,8 @@ impl Dispatcher for MockDispatcher {
                 graph.insert(0, json!({
                     "@id": "./",
                     "@type": "Dataset",
-                    "name": "ScienceMesh Research Data Package",
-                    "description": "A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
+                    "name": title,
+                    "description": "(yet not passed) A research data package with Jupyter notebook and datasets for sharing through ScienceMesh federation",
                     "datePublished": chrono::Utc::now().to_rfc3339(),
                     "creator": { "@id": "#creator" },
                     "runsOn": { "@id": "#destination" },
@@ -918,8 +926,8 @@ impl Dispatcher for MockDispatcher {
                 })
             }
 
-            let rocrate = create_rocrate(files, &share_with);
             let dataset_title = &input.dataset.title;
+            let rocrate = create_rocrate(files, &share_with, dataset_title);
 
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({

@@ -433,20 +433,31 @@ pub struct DatasetHandle {
 /// But in fact, some tool need config files that is independent of data files passed in.
 /// We may also want to extend this as a tool can be a combination of multiple tool such as resource provider tool.
 /// This interface high likely will be full re-definded.
-///
-/// dataset is the url of dataset handler, this should be resolvable by datahugger.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserInfo {
+    #[prost(string, tag = "1")]
+    pub sub: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub email: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "3")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "4")]
+    pub preferred_username: ::core::option::Option<::prost::alloc::string::String>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchToolRequest {
-    #[prost(string, tag = "1")]
+    #[prost(message, optional, tag = "1")]
+    pub user_info: ::core::option::Option<UserInfo>,
+    #[prost(string, tag = "2")]
     pub tool_id: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "3")]
     pub dataset: ::core::option::Option<DatasetHandle>,
-    #[prost(map = "string, message", tag = "3")]
+    #[prost(map = "string, message", tag = "4")]
     pub slots_mapping: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         TypedValue,
     >,
-    #[prost(map = "string, message", tag = "4")]
+    #[prost(map = "string, message", tag = "5")]
     pub files: ::std::collections::HashMap<::prost::alloc::string::String, FileEntry>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
