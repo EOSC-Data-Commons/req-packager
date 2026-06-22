@@ -278,24 +278,27 @@ impl ToolSource for ToolRegistry {
         // tracing::info!("resp is: {:?}", resp);
         let tools = resp
             .into_iter()
-            .map(|res| {
-                let slots = res
+            .map(|resp| {
+                let slots = resp
                     .input_slots
                     .into_iter()
                     .map(|s| s.into())
                     .collect::<Vec<_>>();
 
+                let kind = if resp.types.contains(&"dataset".to_string()) {
+                    ToolKind::SlotsAndFiles
+                } else {
+                    ToolKind::SlotsOnly
+                };
                 ToolMeta {
-                    id: res.id.to_string(),
-                    version: res.version,
-                    uri: res.uri,
-                    types: res.types,
-                    name: res.name,
-                    description: res.description,
+                    id: resp.id.to_string(),
+                    version: resp.version,
+                    uri: resp.uri,
+                    types: resp.types,
+                    name: resp.name,
+                    description: resp.description,
                     slots,
-                    // FIXME: this should read from tool registry as well, for now, default to
-                    // SlotsOnly, because others are not yet registred.
-                    kind: ToolKind::SlotsOnly,
+                    kind,
                 }
             })
             .collect::<Vec<_>>();
@@ -357,24 +360,27 @@ impl ToolSource for ToolRegistry {
         })?;
         let tools = response
             .into_iter()
-            .map(|res| {
-                let slots = res
+            .map(|resp| {
+                let slots = resp
                     .input_slots
                     .into_iter()
                     .map(|s| s.into())
                     .collect::<Vec<_>>();
 
+                let kind = if resp.types.contains(&"dataset".to_string()) {
+                    ToolKind::SlotsAndFiles
+                } else {
+                    ToolKind::SlotsOnly
+                };
                 ToolMeta {
-                    id: res.id.to_string(),
-                    version: res.version,
-                    uri: res.uri,
-                    types: res.types,
-                    name: res.name,
-                    description: res.description,
+                    id: resp.id.to_string(),
+                    version: resp.version,
+                    uri: resp.uri,
+                    types: resp.types,
+                    name: resp.name,
+                    description: resp.description,
                     slots,
-                    // FIXME: this should read from tool registry as well, for now, default to
-                    // SlotsOnly, because others are not yet registred.
-                    kind: ToolKind::SlotsOnly,
+                    kind,
                 }
             })
             .collect::<Vec<_>>();
@@ -395,6 +401,11 @@ impl ToolSource for ToolRegistry {
             .map(|s| s.into())
             .collect::<Vec<_>>();
 
+        let kind = if resp.types.contains(&"dataset".to_string()) {
+            ToolKind::SlotsAndFiles
+        } else {
+            ToolKind::SlotsOnly
+        };
         let tool = ToolMeta {
             id: id.to_string(),
             version: resp.version,
@@ -403,9 +414,7 @@ impl ToolSource for ToolRegistry {
             name: resp.name,
             description: resp.description,
             slots,
-            // FIXME: this should read from tool registry as well, for now, default to
-            // SlotsOnly, because others are not yet registred.
-            kind: ToolKind::SlotsOnly,
+            kind,
         };
         return Ok(tool);
     }
@@ -829,7 +838,10 @@ impl Dispatcher for MockDispatcher {
             // TODO: this needs to be constructed, and this is the main OCM trick.
             let sender = "jusong.yu@dev1.player.eosc-data-commons.eu";
 
-            fn create_rocrate(files: &HashMap<RenameName, FileEntry>, share_with: &str) -> serde_json::Value {
+            fn create_rocrate(
+                files: &HashMap<RenameName, FileEntry>,
+                share_with: &str,
+            ) -> serde_json::Value {
                 let mut graph: Vec<serde_json::Value> = Vec::new();
                 let mut has_part: Vec<serde_json::Value> = Vec::new();
 
