@@ -245,21 +245,6 @@ the cell doubling time, which is a measure of population growth."
             ],
             kind: ToolKind::DatasetOnly,
         },
-        ToolMeta {
-            id: "::st:003".to_string(),
-            version: "v0".to_string(),
-            name: "CernBox".to_string(),
-            uri: "cernbox.cern.ch".to_string(),
-            types: vec!["data access".to_string(), "cernbox".to_string()],
-            description: "Tool to send files to CernBox user".to_string(),
-            slots: vec![Slot {
-                id: "shared_with".to_string(),
-                name: "Shared With".to_string(),
-                slot_type: "string".to_string(),
-                is_optional: false,
-            }],
-            kind: ToolKind::SlotsAndFiles,
-        },
     ]
 });
 
@@ -843,7 +828,7 @@ impl Dispatcher for MockDispatcher {
             let sender_display_name = sender;
 
             // TODO: this needs to be constructed, and this is the main OCM trick.
-            let sender = format!("{sender}@grpc.eosc-coordinator.ethz.ch");
+            let sender = format!("{sender}@eosc-coordinator.ethz.ch");
 
             fn create_rocrate(
                 files: &HashMap<RenameName, FileEntry>,
@@ -1208,7 +1193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter("info") // filter logs by level
         .init();
 
-    let addr = "127.0.0.1:50051".parse()?;
+    let addr = "0.0.0.0:50051".parse()?;
     // XXX: when new type/tool added, do I want to reload the packager in the memory?
     // pro: tool/type-registry is more static and they usually don't have many updates, query is faster
     // (however there is not too much query needed, just index visiting).
