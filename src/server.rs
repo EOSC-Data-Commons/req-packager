@@ -3,13 +3,22 @@ use futures_core::stream::BoxStream;
 use prost_types::Timestamp;
 use rand::{rng, seq::IndexedRandom, RngExt};
 use req_packager::{
-    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchInput, LaunchRequset, RawToken, TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolRegistryClient, ToolSource, ToolState, UserId, UserInfo, Value, grpc::{
-        self, ToolTaskHandler, dataplayer_service_server::DataplayerServiceServer, dataset_service_server::DatasetServiceServer, tool_service_server::{ToolService, ToolServiceServer}, tool_state
-    }
+    grpc::{
+        self,
+        dataplayer_service_server::DataplayerServiceServer,
+        dataset_service_server::DatasetServiceServer,
+        tool_service_server::{ToolService, ToolServiceServer},
+        tool_state, ToolTaskHandler,
+    },
+    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
+    DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchInput, LaunchRequset, RawToken,
+    TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolRegistryClient, ToolSource, ToolState,
+    UserId, UserInfo, Value,
 };
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -320,6 +329,7 @@ fn generate_tools() -> Vec<ToolMeta> {
             description: "".to_uppercase(),
             slots: vec![],
             kind: ToolKind::SlotsOnly,
+            raw_definition: json!({}),
         })
         .collect()
 }

@@ -6,7 +6,7 @@ use datahugger::FileMeta;
 use futures_util::StreamExt;
 use jsonwebtoken::dangerous::insecure_decode;
 use serde::Serialize;
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 
 use futures_core::stream::BoxStream;
 use grpc::{
@@ -772,14 +772,37 @@ impl ToolService for ToolDatabase {
             .map(|f| f.into())
             .collect::<Vec<_>>();
 
-        let tools = self.tool_source.find_tools(&files).await.map_err(|err| {
-            Status::not_found(format!("not find tool, match_tools_by_data, {err}"))
-        })?;
+        let default_tool = ToolMeta {
+            id: "::st:001".to_string(),
+            version: "v0.1.3".to_string(),
+            name: "EOSC-Data-Commons/binder-python-tool".to_string(),
+            uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
+            types: vec!["general".to_string(), "egi-replay".to_string()],
+            description: "binder python tool in egi-replay".to_string(),
+            slots: vec![],
+            kind: ToolKind::DatasetOnly,
+            raw_definition: json!({
+                "urlpath": "notebooks/python.ipynb"
+            }),
+        };
+        let tools = match self.tool_source.find_tools(&files).await {
+            Ok(mut tools) => {
+                if tools.is_empty() {
+                    tools.push(default_tool);
+                }
+                tools
+            }
+            Err(_) => {
+                // NOTE: this is the fallback solution when zero tool found
+                vec![default_tool]
+            }
+        };
         // tracing::info!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
             .map(|t| t.into())
             .collect::<Vec<grpc::ToolMeta>>();
+
         Ok(Response::new(MatchToolsByDataResponse { tools }))
     }
 
@@ -917,6 +940,7 @@ pub struct ToolMeta {
     pub slots: Vec<Slot>,
     pub kind: ToolKind,
     // pub runtime: RuntimeMeta,
+    pub raw_definition: JsonValue,
 }
 
 impl From<ToolMeta> for grpc::ToolMeta {

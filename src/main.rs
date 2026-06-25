@@ -23,6 +23,7 @@ use reqwest::{
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_json::Value as JsonValue;
 use tonic_health::server::HealthReporter;
 
 use tokio::sync::RwLock;
@@ -188,9 +189,22 @@ impl From<ResponseSlot> for Slot {
     }
 }
 
+// This is the type for handle the API call return form api/tools/{id}
 #[derive(Deserialize, Debug)]
-struct OneToolResponse {
-    // XXX: @reggie, maybe this better to be some special string type id?
+struct OneToolPinResponse {
+    // id: u64,
+    uri: String,
+    name: String,
+    description: String,
+    types: Vec<String>,
+    version: String,
+    input_slots: Vec<ResponseSlot>,
+    raw_definition: JsonValue,
+}
+
+// This is the type for handle the API call return form api/search/ and api/match
+#[derive(Deserialize, Debug)]
+struct OneToolSearchResponse {
     id: u64,
     uri: String,
     name: String,
@@ -204,46 +218,33 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
     vec![
         ToolMeta {
             id: "::st:001".to_string(),
-            version: "v0".to_string(),
-            name: "mybinder".to_string(),
-            uri: "https://mybinder.org/".to_string(),
-            types: vec!["general".to_string(), "mybinder".to_string()],
-            description: "mybinder as general tool".to_string(),
+            version: "v0.1.3".to_string(),
+            name: "EOSC-Data-Commons/binder-python-tool".to_string(),
+            uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
+            types: vec!["general".to_string(), "egi-replay".to_string()],
+            description: "binder python tool in egi-replay".to_string(),
             slots: vec![],
             kind: ToolKind::DatasetOnly,
+            raw_definition: json!({
+                "urlpath": "notebooks/python.ipynb"
+            }
+            ),
         },
         ToolMeta {
-            id: "::st:002".to_string(),
+            id: "::st:003".to_string(),
             version: "v0".to_string(),
-            name: "RRP - Cell doubling time from microscopy images".to_string(),
-            uri: "https://rrp-eosc.ethz.ch/".to_string(),
-            types: vec!["dataset url".to_string(), "rrp".to_string()],
-            description: "The Jupyter notebook provided by this RRP project takes two bright-field
-microscopy images as input, performs a cell segmentation to determine the
-respective cell counts, and from the time elapsed between the images calculates
-the cell doubling time, which is a measure of population growth."
-                .to_string(),
-            slots: vec![
-                Slot {
-                    id: "image_0".to_string(),
-                    name: "Image 0".to_string(),
-                    slot_type: "file".to_string(),
-                    is_optional: false,
-                },
-                Slot {
-                    id: "image_1".to_string(),
-                    name: "Image 1".to_string(),
-                    slot_type: "file".to_string(),
-                    is_optional: false,
-                },
-                Slot {
-                    id: "docker_image".to_string(),
-                    name: "Docker Image".to_string(),
-                    slot_type: "string".to_string(),
-                    is_optional: false,
-                },
-            ],
-            kind: ToolKind::DatasetOnly,
+            name: "CernBox".to_string(),
+            uri: "cernbox.cern.ch".to_string(),
+            types: vec!["data access".to_string(), "cernbox".to_string()],
+            description: "Tool to send files to CernBox user".to_string(),
+            slots: vec![Slot {
+                id: "shared_with".to_string(),
+                name: "Shared With".to_string(),
+                slot_type: "string".to_string(),
+                is_optional: false,
+            }],
+            kind: ToolKind::SlotsAndFiles,
+            raw_definition: json!({}),
         },
     ]
 });
@@ -259,7 +260,10 @@ impl ToolSource for ToolRegistry {
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
         tracing::info!("url: {}", url);
         let resp = reqwest::get(url).await?;
-        let resp: Vec<OneToolResponse> = resp.json().await?;
+        dbg!("???ttt");
+        dbg!(&resp);
+        let resp: Vec<OneToolSearchResponse> = resp.json().await.expect("ttthaoeu");
+        dbg!("???xxxx");
         // tracing::info!("resp is: {:?}", resp);
         let tools = resp
             .into_iter()
@@ -284,9 +288,11 @@ impl ToolSource for ToolRegistry {
                     description: resp.description,
                     slots,
                     kind,
+                    raw_definition: json!({}),
                 }
             })
             .collect::<Vec<_>>();
+        dbg!("???''''p");
         return Ok(tools);
     }
 
@@ -340,7 +346,7 @@ impl ToolSource for ToolRegistry {
             .send()
             .await?;
 
-        let response: Vec<OneToolResponse> = response.json().await.inspect_err(|err| {
+        let response: Vec<OneToolSearchResponse> = response.json().await.inspect_err(|err| {
             // dbg!(err);
         })?;
         let tools = response
@@ -366,10 +372,11 @@ impl ToolSource for ToolRegistry {
                     description: resp.description,
                     slots,
                     kind,
+                    raw_definition: json!({}),
                 }
             })
             .collect::<Vec<_>>();
-        return Ok(tools);
+        Ok(tools)
     }
 
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
@@ -379,7 +386,7 @@ impl ToolSource for ToolRegistry {
             }
         }
         let url = format!("{}/tools/{}", self.root_api.as_str(), id);
-        let resp: OneToolResponse = reqwest::get(url).await?.json().await?;
+        let resp: OneToolPinResponse = reqwest::get(url).await?.json().await?;
         let slots = resp
             .input_slots
             .into_iter()
@@ -401,6 +408,7 @@ impl ToolSource for ToolRegistry {
             description: resp.description,
             slots,
             kind,
+            raw_definition: resp.raw_definition,
         };
         return Ok(tool);
     }
@@ -776,10 +784,54 @@ impl Dispatcher for MockDispatcher {
             Ok(task_id)
         } else if tool.types.contains(&"mybinder".to_string()) {
             let task_id = uuid::Uuid::new_v4();
-            // TODO: need to use the helper function I provide in datahugger to get the branch or
+            // todo: need to use the helper function i provide in datahugger to get the branch or
             // commit number.
             let callback_url = Url::from_str("https://mybinder.org/v2/gh/binder-examples/r/main")
                 .expect("a valid url");
+
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+            // TODO: use TaskHandler::new()
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
+        } else if tool.types.contains(&"egi-replay".to_string()) {
+            let task_id = uuid::Uuid::new_v4();
+
+            // construct:
+            // https://replay.notebooks.egi.eu/v2/gh/EOSC-Data-Commons/binder-python-tool/v0.1.1?urlpath=notebooks/python.ipynb?dataset_url=https://zenodo.org/records/20844503
+            let replay_index = "https://replay.notebooks.egi.eu/v2/gh";
+            // let tool_name = "EOSC-Data-Commons/binder-python-tool";
+            let tool_name = &tool.name;
+            // let version = "v0.1.1";
+            let version = &tool.version;
+            // let urlpath = "notebooks/python.ipynb";
+            let urlpath = tool
+                .raw_definition
+                .get("urlpath")
+                .and_then(|v| v.as_str())
+                .expect("didn't find urlpath");
+            let urlpath = urlpath.to_string();
+            // let dataset_url = "https://zenodo.org/records/20844503";
+            let dataset_url = &input.dataset.url;
+            dbg!(&urlpath);
+
+            let callback_url = format!(
+                "{replay_index}/{tool_name}/{version}?urlpath={urlpath}?dataset_url={dataset_url}"
+            );
+
+            dbg!(&callback_url);
+
+            let callback_url = Url::from_str(&callback_url).expect("a valid url");
 
             let artifact = Artifact::HostedTool {
                 callback: callback_url,
@@ -925,7 +977,7 @@ impl Dispatcher for MockDispatcher {
                 "owner": owner,
                 "senderDisplayName": sender_display_name,
                 "sender": sender,
-                "resourceType": "embedded",
+                "resourceType": "ro-crate",
                 "shareType": "user",
                 "protocol": {
                   "name": "multi",
@@ -939,6 +991,7 @@ impl Dispatcher for MockDispatcher {
             let resp = client.post(api_url).json(&project_data).send().await?;
 
             if !resp.status().is_success() {
+                dbg!(&resp);
                 dbg!("fail here");
                 let artifact = Artifact::FailedTool;
                 let task_handler = TaskHandler {
