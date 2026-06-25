@@ -34,6 +34,7 @@ use std::{
     path::PathBuf,
     str::FromStr,
     sync::{Arc, LazyLock},
+    time::Duration,
 };
 use tonic::transport::Server;
 use url::Url;
@@ -231,6 +232,33 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             ),
         },
         ToolMeta {
+            id: "::st:002".to_string(),
+            version: "v0".to_string(),
+            name: "Reproduciple Research Platform (RRP)".to_string(),
+            uri: "https://rrp-eosc.ethz.ch/".to_string(),
+            types: vec!["general".to_string(), "rrp".to_string()],
+            description: "RRP as genenal tool".to_string(),
+            slots: vec![
+                Slot {
+                    id: "image0".to_string(),
+                    name: "Image 0".to_string(),
+                    slot_type: "file".to_string(),
+                    is_optional: false,
+                },
+                Slot {
+                    id: "image1".to_string(),
+                    name: "Image 1".to_string(),
+                    slot_type: "file".to_string(),
+                    is_optional: false,
+                },
+            ],
+            kind: ToolKind::DatasetOnly,
+            raw_definition: json!({
+                "repositoryUrl": "https://gitlab.ethz.ch/Reproducible-Research-Platform/tools/Cell-Doubling-Time",
+                "docker_image": "reproducibleresearchplatform/rrp-eosc:cell-doubling-time_1.0.1"
+            }),
+        },
+        ToolMeta {
             id: "::st:003".to_string(),
             version: "v0".to_string(),
             name: "CernBox".to_string(),
@@ -260,11 +288,7 @@ impl ToolSource for ToolRegistry {
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
         tracing::info!("url: {}", url);
         let resp = reqwest::get(url).await?;
-        dbg!("???ttt");
-        dbg!(&resp);
-        let resp: Vec<OneToolSearchResponse> = resp.json().await.expect("ttthaoeu");
-        dbg!("???xxxx");
-        // tracing::info!("resp is: {:?}", resp);
+        let resp: Vec<OneToolSearchResponse> = resp.json().await?;
         let tools = resp
             .into_iter()
             .map(|resp| {
@@ -292,7 +316,6 @@ impl ToolSource for ToolRegistry {
                 }
             })
             .collect::<Vec<_>>();
-        dbg!("???''''p");
         return Ok(tools);
     }
 
@@ -786,8 +809,7 @@ impl Dispatcher for MockDispatcher {
             let task_id = uuid::Uuid::new_v4();
             // todo: need to use the helper function i provide in datahugger to get the branch or
             // commit number.
-            let callback_url = Url::from_str("https://mybinder.org/v2/gh/binder-examples/r/main")
-                .expect("a valid url");
+            let callback_url = Url::from_str(&input.dataset.url).expect("a valid url");
 
             let artifact = Artifact::HostedTool {
                 callback: callback_url,
@@ -823,13 +845,10 @@ impl Dispatcher for MockDispatcher {
             let urlpath = urlpath.to_string();
             // let dataset_url = "https://zenodo.org/records/20844503";
             let dataset_url = &input.dataset.url;
-            dbg!(&urlpath);
 
             let callback_url = format!(
                 "{replay_index}/{tool_name}/{version}?urlpath={urlpath}?dataset_url={dataset_url}"
             );
-
-            dbg!(&callback_url);
 
             let callback_url = Url::from_str(&callback_url).expect("a valid url");
 
@@ -1025,47 +1044,8 @@ impl Dispatcher for MockDispatcher {
 
             Ok(task_id)
         } else if tool.types.contains(&"rrp".to_string()) {
-            //
-            //
-            // {
-            //     "type": "createFromExternalCatalog",
-            //     "image": "registry.example.com/repo2docker/jupyter:latest",
-            //     "environmentType": "repo2docker",
-            //     "name": "my-project",
-            //     "description": "Example project with all optional settings filled",
-            //     "resources": {
-            //       "cpu": 4.0,
-            //       "memMb": 8192
-            //     },
-            //     "dataMappingTemplate": [
-            //       { "type": "mountPoint", "name": "genome" },
-            //       {
-            //         "type": "directory",
-            //         "name": "data",
-            //         "children": [
-            //           { "type": "mountPoint", "name": "raw" }
-            //         ]
-            //       }
-            //     ],
-            //     "dataMapping": {
-            //       "genome": {
-            //         "type": "openbis",
-            //         "server": "https://openbis.example.com",
-            //         "permId": "20240101120000000-1",
-            //         "path": "sequences"
-            //       },
-            //       "data/raw": {
-            //         "type": "zenodo",
-            //         "doi": "10.5281/zenodo.1234567"
-            //       }
-            //     }
-            //   }
-
-            dbg!("should be here!");
             let task_id = uuid::Uuid::new_v4();
-
             let backend_url = "https://rrp-eosc.ethz.ch";
-
             let client = Client::builder().build()?;
 
             // let LaunchInput::FilesOnly(files) = input else {
@@ -1073,40 +1053,60 @@ impl Dispatcher for MockDispatcher {
             // };
             let hdataset = &input.dataset;
             let doi = hdataset.url.trim_start_matches("https://doi.org/");
-            dbg!(doi);
+            // dbg!(doi);
             // doi = "10.5281/zenodo.20507550"
 
-            // ---- CREATE PROJECT ----
-            // FIXME:: image name is from toolmeta
-            let project_data = serde_json::json!({
-                "type": "createFromExternalCatalog",
-                "image": "reproducibleresearchplatform/rrp-tst:q75v54b-cunya",
-                "name": format!("eosc-{task_id}"),
-                "environmentType": "jupyterlab",
-                "dataMappingTemplate": [
-                  {
-                    "type": "directory",
-                    "name": "data",
-                    "children": [
-                      { "type": "mountPoint", "name": "raw" }
-                    ]
-                  }
-                ],
-                "dataMapping": {
-                    "data/raw": {
-                        "type": "zenodo",
-                        "doi": doi
+            // CREATE PROJECT
+            let slots = &input.slots;
+            let data_mounts: Vec<serde_json::Value> = slots
+                .iter()
+                .filter_map(|(key, entry)| {
+                    let slot = tool.slots.iter().find(|s| s.name == *key)?;
+
+                    match entry {
+                        SlotValue::File(f) => {
+                            let path = &f.path.trim_start_matches("__ROOT__/");
+
+                            Some(serde_json::json!({
+                                "mountPath": slot.id,
+                                "source": {
+                                    "type": "zenodo",
+                                    "doi": doi
+                                },
+                                "path": path
+                            }))
+                        }
+                        _ => None, // ignore non-files
                     }
-                }
+                })
+                .collect();
+
+            let image = tool
+                .raw_definition
+                .get("docker_image")
+                .and_then(|v| v.as_str())
+                .expect("didn't find urlpath");
+
+            // FIXME: the image should coming from tool-metadata
+            // FIXME: the descriptino should be the tool+dataset
+            let project_data = serde_json::json!({
+                "image": image,
+                "name": format!("eosc-{task_id}"),
+                "description": "Created via Coordinator",
+                "resources": {
+                    "cpu": 1.0,
+                    "memMb": 2048
+                },
+                "dataMounts": data_mounts,
             });
 
-            // FIXME: start project and pass files into it
-            let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
-                panic!("oidc_agent_token not found in env var")
-            };
+            // // FIXME: start project and pass files into it
+            // let Ok(oidc_agent_token) = std::env::var("OIDC_AGENT_TOKEN") else {
+            //     panic!("oidc_agent_token not found in env var")
+            // };
             let resp = client
-                .post(format!("{}/api/projects", backend_url))
-                .bearer_auth(oidc_agent_token)
+                .post(format!("{}/external/dispatcher/v1/projects", backend_url))
+                .bearer_auth(token)
                 .json(&project_data)
                 .send()
                 .await?;
@@ -1128,12 +1128,151 @@ impl Dispatcher for MockDispatcher {
                 return Ok(task_id);
             }
 
+            let location = resp
+                .headers()
+                .get("Location")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            // NOTE: a rust excersize, why this moves??
+            // let location = resp.headers().get("Location").and_then(|v| v.to_str().ok());
+
             tracing::info!("Create project: {}", resp.status());
 
-            let location = resp.headers().get("Location").and_then(|v| v.to_str().ok());
+            // Poll and wait until creationStatus == "Ready"
+            let project_url = resp.json::<serde_json::Value>().await?["id"]
+                .as_str()
+                .expect("missing project id")
+                .to_string();
+
+            let mut attempts = 0;
+            loop {
+                if attempts >= 20 {
+                    return Err(anyhow::anyhow!(
+                        "Project did not reach 'Ready' status after 20 attempts"
+                    ));
+                }
+
+                attempts += 1;
+
+                let status_resp = client.get(&project_url).bearer_auth(token).send().await?;
+
+                let json: serde_json::Value = status_resp.json().await?;
+                let status = json["creationStatus"].as_str().unwrap_or("");
+
+                if status == "Ready" {
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
+                tracing::info!("Poll and wait creation: attempts {}", attempts);
+            }
+
+            let repository_url = tool
+                .raw_definition
+                .get("repositoryUrl")
+                .and_then(|v| v.as_str())
+                .expect("didn't find urlpath");
+
+            // Clone repository (async)
+            let clone_resp = client
+                .post(format!("{}/clone", project_url))
+                .bearer_auth(token)
+                .json(&serde_json::json!({
+                    "repositoryUrl": repository_url
+                }))
+                .send()
+                .await?;
+
+            let clone_json: serde_json::Value = clone_resp.json().await?;
+
+            // Poll clone execution until "Success"
+            let execution_url = clone_json["execution"]
+                .as_str()
+                .expect("missing execution url")
+                .to_string();
+
+            let mut attempts = 0;
+            loop {
+                if attempts >= 20 {
+                    return Err(anyhow::anyhow!(
+                        "Project did not reach 'Ready' status after 20 attempts"
+                    ));
+                }
+
+                attempts += 1;
+
+                let resp = client.get(&execution_url).bearer_auth(token).send().await?;
+
+                let json: serde_json::Value = resp.json().await?;
+                let status = json["status"].as_str().unwrap_or("");
+
+                if status == "Success" {
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
+                tracing::info!("Poll and wait execution: attempts {}", attempts);
+            }
+
+            // Checkout branch (blocking)
+            client
+                .post(format!("{}/checkout", project_url))
+                .bearer_auth(token)
+                .json(&serde_json::json!({
+                    "ref": "main"
+                }))
+                .send()
+                .await?
+                .error_for_status()?;
+
+            // Trigger data retrival
+            client
+                .post(format!("{}/data", project_url))
+                .bearer_auth(token)
+                .send()
+                .await?
+                .error_for_status()?;
+
+            // poll and wait for
+            let mut attempts = 0;
+            loop {
+                if attempts >= 20 {
+                    return Err(anyhow::anyhow!(
+                        "Project (file staging) did not reach 'Ready' status after 20 attempts"
+                    ));
+                }
+                attempts += 1;
+
+                let resp = client.get(&project_url).bearer_auth(token).send().await?;
+
+                let json: serde_json::Value = resp.json().await?;
+
+                // FIXME: the key sholud be read from slots. here I hardcoded it for the
+                // Cell-Doubling-Time app
+                let s1 = json["dataStatus"]["image0"]["status"]
+                    .as_str()
+                    .unwrap_or("");
+
+                let s2 = json["dataStatus"]["image1"]["status"]
+                    .as_str()
+                    .unwrap_or("");
+
+                if s1 == "Available" && s2 == "Available" {
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
+                tracing::info!("Poll and wait datastaging: attempts {}", attempts);
+            }
+
+            // return the callback url
 
             let project_code = location
-                .and_then(|loc| loc.split('/').next_back())
+                .and_then(|loc| loc.split('/').next_back().map(|s| s.to_owned()))
                 .expect("project id not there");
 
             tracing::info!("Project code: {}", project_code);
@@ -1145,32 +1284,6 @@ impl Dispatcher for MockDispatcher {
             // XXX: get status should be moved to monitor_state.
             // the state monitor is a dummy one that directly send Ready signal.
             // It should be send a stream with updating states.
-            //
-            // // ---- GET STATUS ----
-            // let resp = client
-            //     .get(format!("{}/api/projects/{}", backend_url, project_code))
-            //     .send()
-            //     .await?;
-            //
-            // tracing::info!("Status: {}", resp.status());
-            // let json: serde_json::Value = resp.json().await?;
-            //
-            // tracing::debug!("Body: {}", json);
-
-            // // ---- START PROJECT ----
-            // let start_req = serde_json::json!({
-            //     "type": "start",
-            //     "remote": false,
-            // });
-            //
-            // let resp = client
-            //     .post(format!("{}/api/projects/{}", backend_url, project_code))
-            //     .headers(headers)
-            //     .json(&start_req)
-            //     .send()
-            //     .await?;
-            //
-            // println!("Start: {}", resp.status());
 
             ///// -----------
             let artifact = Artifact::HostedTool {
