@@ -459,6 +459,11 @@ pub struct LaunchToolRequest {
     >,
     #[prost(map = "string, message", tag = "5")]
     pub files: ::std::collections::HashMap<::prost::alloc::string::String, FileEntry>,
+    #[prost(map = "string, string", tag = "6")]
+    pub api_keys: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UserId {
