@@ -1157,7 +1157,6 @@ fn get_token_and_claims_from_request<T>(req: &Request<T>) -> Result<(String, Cla
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Claims {
     pub sub: String,
-    pub preferred_username: String,
     pub exp: usize,
 }
 
