@@ -240,14 +240,14 @@ static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
             description: "RRP as genenal tool".to_string(),
             slots: vec![
                 Slot {
-                    id: "image0".to_string(),
-                    name: "Image 0".to_string(),
+                    id: "image_0.tif".to_string(),
+                    name: "Image 0 (TIF)".to_string(),
                     slot_type: "file".to_string(),
                     is_optional: false,
                 },
                 Slot {
-                    id: "image1".to_string(),
-                    name: "Image 1".to_string(),
+                    id: "image_1.tif".to_string(),
+                    name: "Image 1 (TIF)".to_string(),
                     slot_type: "file".to_string(),
                     is_optional: false,
                 },
@@ -1249,18 +1249,23 @@ impl Dispatcher for MockDispatcher {
                 let resp = client.get(&project_url).bearer_auth(token).send().await?;
 
                 let json: serde_json::Value = resp.json().await?;
+                dbg!(&json);
 
-                // FIXME: the key sholud be read from slots. here I hardcoded it for the
-                // Cell-Doubling-Time app
-                let s1 = json["dataStatus"]["image0"]["status"]
-                    .as_str()
-                    .unwrap_or("");
+                let is_all_slot_staged = slots.iter().all(|(key, _)| {
+                    let slot = tool
+                        .slots
+                        .iter()
+                        .find(|&s| s.name == *key)
+                        // TODO: (jyu) This should be an error to tool developer (and who
+                        // registered the tool), not to user. (But user can report to tool provider).
+                        .expect("slot id should align between tool meta and input");
+                    let s = json["dataStatus"][&slot.id]["status"]
+                        .as_str()
+                        .unwrap_or("");
+                    s == "Available"
+                });
 
-                let s2 = json["dataStatus"]["image1"]["status"]
-                    .as_str()
-                    .unwrap_or("");
-
-                if s1 == "Available" && s2 == "Available" {
+                if is_all_slot_staged {
                     break;
                 }
 
