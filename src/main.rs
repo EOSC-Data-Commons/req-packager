@@ -204,6 +204,7 @@ struct OneToolPinResponse {
 }
 
 // This is the type for handle the API call return form api/search/ and api/match
+// NOTE: (jyu) this should revisit to align with the schema: https://github.com/EOSC-Data-Commons/toolmeta-models/blob/main/src/toolmeta_models/tool_generic.py
 #[derive(Deserialize, Debug)]
 struct OneToolSearchResponse {
     id: u64,
@@ -1380,8 +1381,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_src = Arc::new(DatahuggerDataSource::new());
     let data_relayer = DataRelayer::new(data_src);
 
+    // fallback to the production deployment if not specified.
     let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
-        .unwrap_or("https://dev.tools-registry.eosc-data-commons.eu/api/v1".to_string());
+        .unwrap_or("https://tools-registry.eosc-data-commons.eu/api/v1".to_string());
 
     let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
