@@ -272,6 +272,7 @@ message LaunchToolRequest {
   DatasetHandle dataset = 3;
   map<string, TypedValue> slots_mapping = 4;
   map<string, FileEntry> files = 5;
+  map<string, string> api_keys = 6;
 }
 
 message UserId {

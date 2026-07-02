@@ -146,6 +146,7 @@ impl Dispatcher for MockDispatcher {
         token: &RawToken,
         tool: &ToolMeta,
         input: &LaunchInput,
+        api_keys: &HashMap<String, String>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a

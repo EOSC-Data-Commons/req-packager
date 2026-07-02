@@ -290,7 +290,6 @@ impl ToolSource for ToolRegistry {
         tracing::info!("url: {}", url);
         let resp = reqwest::get(url).await?;
         let resp: Vec<OneToolSearchResponse> = resp.json().await?;
-        dbg!(&resp);
         let tools = resp
             .into_iter()
             .map(|resp| {
@@ -466,6 +465,7 @@ impl Dispatcher for MockDispatcher {
         token: &RawToken,
         tool: &ToolMeta,
         input: &LaunchInput,
+        api_keys: &HashMap<String, String>,
     ) -> anyhow::Result<Uuid> {
         // it also relates to the auth problem, who has the access to the vre? who should control
         // the permission of vre. I think it should be the vre provider and somewhere there is a
@@ -713,7 +713,7 @@ impl Dispatcher for MockDispatcher {
 
             let user_agent = format!("eosc-coordinator/{}", env!("CARGO_PKG_VERSION"));
             let mut headers = HeaderMap::new();
-            if let Ok(key) = std::env::var("VIP_API_KEY") {
+            if let Some(key) = api_keys.get("vip") {
                 headers.insert("apikey", HeaderValue::from_str(&key.to_string())?);
                 // dbg!(key);
             }

@@ -1091,6 +1091,7 @@ pub trait Dispatcher: Send + Sync + 'static {
         token: &RawToken,
         tool: &ToolMeta,
         input: &LaunchInput,
+        api_keys: &HashMap<String, String>,
     ) -> anyhow::Result<Uuid>;
     async fn get_artifact(&self, handler_id: &Uuid) -> anyhow::Result<Artifact>;
     /// get status of a tool from its handler id.
@@ -1158,6 +1159,7 @@ fn get_token_and_claims_from_request<T>(req: &Request<T>) -> Result<(String, Cla
 pub struct Claims {
     pub sub: String,
     pub exp: usize,
+    // pub preferred_username: String,
 }
 
 impl From<grpc::TypedValue> for SlotValue {
@@ -1183,7 +1185,7 @@ impl DataplayerService for Dataplayer {
         req: Request<LaunchToolRequest>,
     ) -> Result<Response<LaunchToolResponse>, Status> {
         tracing::info!("Got a request to launch tool: {req:?}");
-        let (token, claims) = get_token_and_claims_from_request(&req).unwrap();
+        let (token, _) = get_token_and_claims_from_request(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
 
@@ -1234,9 +1236,11 @@ impl DataplayerService for Dataplayer {
         };
         let grpc_user_info = req.user_info.clone().expect("no user_info passing");
 
+        let api_keys = &req.api_keys;
+
         let task_id = self
             .dispatcher
-            .launch(&grpc_user_info.into(), &token, &tool_meta, &launch_inp)
+            .launch(&grpc_user_info.into(), &token, &tool_meta, &launch_inp, api_keys)
             .await
             .unwrap();
 
