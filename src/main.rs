@@ -212,7 +212,7 @@ struct OneToolSearchResponse {
     description: String,
     types: Vec<String>,
     version: String,
-    input_slots: Vec<ResponseSlot>,
+    input_slots: Option<Vec<ResponseSlot>>,
 }
 
 static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
@@ -289,14 +289,18 @@ impl ToolSource for ToolRegistry {
         tracing::info!("url: {}", url);
         let resp = reqwest::get(url).await?;
         let resp: Vec<OneToolSearchResponse> = resp.json().await?;
+        dbg!(&resp);
         let tools = resp
             .into_iter()
             .map(|resp| {
-                let slots = resp
-                    .input_slots
-                    .into_iter()
-                    .map(|s| s.into())
-                    .collect::<Vec<_>>();
+                let slots = if let Some(input_slots) = resp.input_slots {
+                    input_slots
+                        .into_iter()
+                        .map(|s| s.into())
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                };
 
                 let kind = if resp.types.contains(&"data access".to_string()) {
                     ToolKind::SlotsAndFiles
@@ -375,11 +379,14 @@ impl ToolSource for ToolRegistry {
         let tools = response
             .into_iter()
             .map(|resp| {
-                let slots = resp
-                    .input_slots
-                    .into_iter()
-                    .map(|s| s.into())
-                    .collect::<Vec<_>>();
+                let slots = if let Some(input_slots) = resp.input_slots {
+                    input_slots
+                        .into_iter()
+                        .map(|s| s.into())
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                };
 
                 let kind = if resp.types.contains(&"data access".to_string()) {
                     ToolKind::SlotsAndFiles
