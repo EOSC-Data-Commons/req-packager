@@ -896,6 +896,142 @@ impl Dispatcher for MockDispatcher {
             db.entry(task_id).or_insert(task_handler);
 
             Ok(task_id)
+        } else if tool.types.contains(&"binder-launcher".to_string()) {
+            let task_id = uuid::Uuid::new_v4();
+
+            let raw = &tool.raw_definition;
+
+            // ---- required fields ----
+            let binder_base = raw
+                .get("binder_base")
+                .and_then(|v| v.as_str())
+                .unwrap_or("https://mybinder.org")
+                .trim_end_matches('/');
+
+            let launcher_repo = raw
+                .get("launcher_repo")
+                .and_then(|v| v.as_str())
+                .expect("missing launcher_repo");
+
+            let launcher_ref = raw
+                .get("launcher_ref")
+                .and_then(|v| v.as_str())
+                .unwrap_or("main");
+
+            let target_repo = raw
+                .get("target_repo")
+                .and_then(|v| v.as_str())
+                .expect("missing target_repo");
+
+            // optional
+            let branch = raw.get("branch").and_then(|v| v.as_str());
+            let notebook_path = raw.get("notebook_path").and_then(|v| v.as_str());
+            let overwrite = raw
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let cleanup = raw
+                .get("cleanup")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let run_postbuild = raw
+                .get("run_postbuild")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let inner_urlpath = {
+                // inner query builder
+                let mut inner = form_urlencoded::Serializer::new(String::new());
+
+                inner.append_pair("repo", target_repo);
+
+                if let Some(branch) = branch {
+                    if !branch.is_empty() && branch != "main" {
+                        inner.append_pair("branch", branch);
+                    }
+                }
+
+                if let Some(path) = notebook_path {
+                    if !path.is_empty() {
+                        inner.append_pair("notebookpath", path);
+                    }
+                }
+
+                if !overwrite {
+                    inner.append_pair("overwrite", "0");
+                }
+
+                if cleanup {
+                    inner.append_pair("cleanup", "1");
+                }
+
+                if run_postbuild {
+                    inner.append_pair("run_postbuild", "1");
+                }
+
+                // ---- env ----
+                if let Some(env) = raw.get("env").and_then(|v| v.as_object()) {
+                    for (k, v) in env {
+                        if let Some(val) = v.as_str() {
+                            inner.append_pair(k, val);
+                        }
+                    }
+                }
+
+                // ---- data files from input.files ----
+                let mut data_files_json = Vec::new();
+
+                let files = &input.files;
+                for (name, file) in files.iter() {
+                    data_files_json.push(serde_json::json!({
+                        "url": file.download_url,
+                        "path": name.to_string()
+                    }));
+                }
+
+                let dataset_url = &input.dataset.url;
+                data_files_json.push(serde_json::json!({
+                    "url": dataset_url,
+                    "path": null
+                }));
+
+                if !data_files_json.is_empty() {
+                    let json =
+                        serde_json::to_string(&data_files_json).expect("serialize data_files");
+
+                    inner.append_pair("data", &json);
+                }
+                format!("launch?{}", inner.finish())
+            };
+
+            // ---- outer URL ----
+            let mut callback_url = Url::parse(&format!(
+                "{}/v2/gh/{}/{}",
+                binder_base, launcher_repo, launcher_ref
+            ))
+            .expect("valid base url");
+
+            callback_url
+                .query_pairs_mut()
+                .append_pair("urlpath", &inner_urlpath);
+
+            tracing::info!("Create project: {}", callback_url);
+
+            // ---- task handler ----
+            let artifact = Artifact::HostedTool {
+                callback: callback_url,
+            };
+
+            let task_handler = TaskHandler {
+                id: HandlerId(task_id),
+                user_id: UserId(uid.to_string()),
+                state: ToolState::Ready,
+                artifact,
+            };
+
+            let mut db = self.db.write().await;
+            db.entry(task_id).or_insert(task_handler);
+
+            Ok(task_id)
         } else if tool.types.contains(&"egi-replay".to_string()) {
             let task_id = uuid::Uuid::new_v4();
 
@@ -1455,7 +1591,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // fallback to the production deployment if not specified.
     let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
-        .unwrap_or("https://tools-registry.eosc-data-commons.eu/api/v1".to_string());
+        .unwrap_or("https://dev.tools-registry.eosc-data-commons.eu/api/v1".to_string());
 
     let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
