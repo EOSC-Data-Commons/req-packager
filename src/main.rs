@@ -881,7 +881,7 @@ impl Dispatcher for MockDispatcher {
             let files = &input.files;
             let slots = &input.slots;
 
-            let domain = "qa.cernbox.cern.ch";
+            let domain = "eosc.cernbox.cern.ch";
             let client = Client::builder().build()?;
             let Some(share_with) = slots.get("Shared With").map(|v| match v {
                 SlotValue::File(_) => unreachable!("must be a value"),
@@ -898,20 +898,20 @@ impl Dispatcher for MockDispatcher {
 
             // XXX: look at all fields here
             // ??, should name and description customized by user?
-            let owner = &user_info.sub;
+            let owner = &user_info.email;
             let email = &user_info.email;
 
             // TODO: (jyu) 'name' and 'preferred_username' is optinal, should I implement fallback logic?
-            let sender = email.split('@').collect::<Vec<_>>()[0];
             // let sender_display_name = &user_info.preferred_username;
-            let sender_display_name = sender;
+            let sender_display_name = email.split('@').collect::<Vec<_>>()[0];
 
             // TODO: this needs to be constructed, and this is the main OCM trick.
-            let sender = format!("{sender}@eosc-coordinator.ethz.ch");
+            let sender = format!("{email}@eosc-coordinator.ethz.ch");
 
             fn create_rocrate(
                 files: &HashMap<RenameName, FileEntry>,
                 share_with: &str,
+                domain: &str,
                 title: &str,
             ) -> serde_json::Value {
                 let mut graph: Vec<serde_json::Value> = Vec::new();
@@ -959,7 +959,7 @@ impl Dispatcher for MockDispatcher {
                     "@id": "#destination",
                     "@type": "Service",
                     "name": "ScienceMesh Service",
-                    "url": "https://qa.cernbox.cern.ch"
+                    "url": format!("https://{domain}"),
                 }));
 
                 // XXX: redundant information, record twice.
@@ -991,7 +991,7 @@ impl Dispatcher for MockDispatcher {
             }
 
             let dataset_title = &input.dataset.title;
-            let rocrate = create_rocrate(files, &share_with, dataset_title);
+            let rocrate = create_rocrate(files, &share_with, domain, dataset_title);
 
             // ---- CREATE PROJECT ----
             let project_data = serde_json::json!({
@@ -1034,7 +1034,7 @@ impl Dispatcher for MockDispatcher {
                 return Ok(task_id);
             }
 
-            let callback_url = Url::from_str("https://qa.cernbox.cern.ch").expect("valid url");
+            let callback_url = Url::from_str(&format!("https://{domain}")).expect("valid url");
 
             let artifact = Artifact::HostedTool {
                 callback: callback_url,
