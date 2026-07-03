@@ -205,7 +205,7 @@ impl DatasetService for DataRelayer {
         &self,
         request: Request<BrowseDatasetByUrlRequest>,
     ) -> Result<Response<Self::BrowseDatasetByUrlStream>, Status> {
-        tracing::info!("Got a request to browser dataset: {request:?}");
+        // tracing::info!("Got a request to browser dataset: {request:?}");
         let (tx, rx) = mpsc::channel(16);
         let data_source = Arc::clone(&self.data_source);
 
@@ -392,7 +392,7 @@ impl DatasetService for DataRelayer {
         request: Request<BrowseDatasetRequest>,
     ) -> Result<Response<Self::BrowseDatasetStream>, Status> {
         // TODO: tracing
-        tracing::info!("Got a request to browser dataset: {request:?}");
+        // tracing::info!("Got a request to browser dataset: {request:?}");
         let (tx, rx) = mpsc::channel(16);
         let data_source = Arc::clone(&self.data_source);
 
@@ -810,7 +810,7 @@ impl ToolService for ToolDatabase {
         &self,
         req: Request<SearchToolsByTextRequest>,
     ) -> Result<Response<SearchToolsByTextResponse>, Status> {
-        tracing::info!("Got a request to search tools by req: {:?}", req);
+        // tracing::info!("Got a request to search tools by req: {:?}", req);
         let req = req.get_ref();
         let text = &req.text;
 
@@ -1184,7 +1184,7 @@ impl DataplayerService for Dataplayer {
         &self,
         req: Request<LaunchToolRequest>,
     ) -> Result<Response<LaunchToolResponse>, Status> {
-        tracing::info!("Got a request to launch tool: {req:?}");
+        // tracing::info!("Got a request to launch tool: {req:?}");
         let (token, _) = get_token_and_claims_from_request(&req).unwrap();
         let req = req.get_ref();
         let id = &req.tool_id;
