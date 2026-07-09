@@ -1,9 +1,11 @@
+use chrono::{DateTime, Utc};
 use datahugger::{
     crawl,
     crawler::{CrawlerError, ProgressManager},
     resolve, resolve_doi_to_url, Entry,
 };
 use exn::Exn;
+use futures::stream;
 use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use indicatif::ProgressBar;
@@ -24,6 +26,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value as JsonValue;
+use sqlx::{types::time::OffsetDateTime, PgPool};
 use tonic_health::server::HealthReporter;
 
 use tokio::sync::RwLock;
@@ -39,11 +42,14 @@ use std::{
 use tonic::transport::Server;
 use url::Url;
 
-struct DatahuggerDataSource;
+struct DatahuggerDataSource {
+    pool: PgPool,
+}
 
 impl DatahuggerDataSource {
-    fn new() -> Self {
-        DatahuggerDataSource
+    pub async fn new(database_url: &str) -> anyhow::Result<Self> {
+        let pool = PgPool::connect(database_url).await?;
+        Ok(Self { pool })
     }
 }
 
@@ -143,14 +149,70 @@ impl DataSource for DatahuggerDataSource {
                 .await
                 .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         }
-        let ds = resolve(&url).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let mp = NoProgress;
-        let files = ds
-            .crawl_file(&client, mp)
-            // TODO: I need log on error cases on the server.
-            .filter_map(|f| async move { f.ok() })
-            .boxed();
-        Ok(files)
+        #[derive(Debug)]
+        struct RecordFile {
+            download_url: String,
+            file_type: Option<String>,
+            file_size: Option<i64>,
+            checksum_type: Option<String>,
+            checksum_value: Option<String>,
+            updated_at: OffsetDateTime,
+        }
+        match resolve(&url).await {
+            Ok(ds) => {
+                let mp = NoProgress;
+                let files = ds
+                    .crawl_file(&client, mp)
+                    // TODO: I need log on error cases on the server.
+                    .filter_map(|f| async move { f.ok() })
+                    .boxed();
+                Ok(files)
+            }
+            // NOTE: (jyu) fallback to filedb, this should revert with the datahugger fetch.
+            // Should go to fileDB first and then goes to datahugger for the latest update.
+            Err(err) => {
+                eprintln!("resolve failed, fallback to DB: {:?}", err);
+
+                let rows = sqlx::query_as!(
+                    RecordFile,
+                    r#"
+                    SELECT 
+                        download_url, 
+                        file_type, 
+                        file_size, 
+                        checksum_type::text as "checksum_type?",
+                        checksum_value,
+                        updated_at
+                    FROM record_files
+                    WHERE record_identifier = $1
+                    "#,
+                    uuid
+                )
+                .fetch_all(&self.pool)
+                .await?;
+
+                // Convert DB rows → your stream item type
+                let items: Vec<FileEntry> = rows
+                    .into_iter()
+                    .map(|r| FileEntry {
+                        download_url: Some(r.download_url.clone()),
+                        path: r.download_url, // XXX: no path stored
+                        is_dir: false,
+                        size_bytes: r.file_size.unwrap_or(0) as u64,
+                        mime_type: r.file_type,
+                        checksum: r.checksum_value,
+                        // XXX: should make the name consistent
+                        modified_at: DateTime::<Utc>::from_timestamp(
+                            r.updated_at.unix_timestamp(),
+                            r.updated_at.nanosecond(),
+                        )
+                        .unwrap(),
+                    })
+                    .collect();
+
+                Ok(stream::iter(items).boxed())
+            }
+        }
     }
 }
 
@@ -1378,7 +1440,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (however there is not too much query needed, just index visiting).
     // con: the packager need to be initialized, how freq it happens to take latest list?
     //
-    let data_src = Arc::new(DatahuggerDataSource::new());
+    let db_url = format!(
+        "postgresql://{}:{}@{}:{}/{}",
+        std::env::var("POSTGRES_USER").unwrap(),
+        std::env::var("POSTGRES_PASSWORD").unwrap(),
+        std::env::var("POSTGRES_ADDRESS").unwrap_or("localhost".to_string()),
+        std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string()),
+        std::env::var("FILE_DB").unwrap_or("filedb".to_string()),
+    );
+    let data_src = DatahuggerDataSource::new(&db_url).await?;
+    let data_src = Arc::new(data_src);
+
     let data_relayer = DataRelayer::new(data_src);
 
     // fallback to the production deployment if not specified.
