@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT \n                        download_url, \n                        file_type, \n                        file_size, \n                        checksum_type::text as \"checksum_type?\",\n                        checksum_value,\n                        updated_at\n                    FROM record_files\n                    WHERE record_identifier = $1\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "download_url",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "file_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "file_size",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "checksum_type?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "checksum_value",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      null,
+      true,
+      false
+    ]
+  },
+  "hash": "f718e49d29461931e4348bddadcf74dc6cfe869da4c4386e07d251865e04b3e0"
+}
