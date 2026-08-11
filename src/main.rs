@@ -1578,8 +1578,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     let db_url = format!(
         "postgresql://{}:{}@{}:{}/{}",
-        std::env::var("POSTGRES_USER").unwrap(),
-        std::env::var("POSTGRES_PASSWORD").unwrap(),
+        std::env::var("POSTGRES_USER").unwrap_or("postgres".to_string()),
+        std::env::var("POSTGRES_PASSWORD").unwrap_or("test".to_string()),
         std::env::var("POSTGRES_ADDRESS").unwrap_or("localhost".to_string()),
         std::env::var("POSTGRES_PORT").unwrap_or("5432".to_string()),
         std::env::var("FILE_DB").unwrap_or("filedb".to_string()),
