@@ -154,65 +154,110 @@ impl DataSource for DatahuggerDataSource {
             download_url: String,
             file_type: Option<String>,
             file_size: Option<i64>,
+            file_name: String,
             checksum_type: Option<String>,
             checksum_value: Option<String>,
             updated_at: OffsetDateTime,
         }
-        match resolve(&url).await {
-            Ok(ds) => {
-                let mp = NoProgress;
-                let files = ds
-                    .crawl_file(&client, mp)
-                    // TODO: I need log on error cases on the server.
-                    .filter_map(|f| async move { f.ok() })
-                    .boxed();
-                Ok(files)
-            }
-            // NOTE: (jyu) fallback to filedb, this should revert with the datahugger fetch.
-            // Should go to fileDB first and then goes to datahugger for the latest update.
-            Err(err) => {
-                eprintln!("resolve failed, fallback to DB: {:?}", err);
 
-                let rows = sqlx::query_as!(
-                    RecordFile,
-                    r#"
+        let uuid = uuid.trim_start_matches("https://doi.org/");
+        tracing::info!("query for url: {uuid}");
+
+        let rows = sqlx::query_as!(
+            RecordFile,
+            r#"
                     SELECT 
                         download_url, 
                         file_type, 
                         file_size, 
+                        file_name,
                         checksum_type::text as "checksum_type?",
                         checksum_value,
                         updated_at
                     FROM record_files
                     WHERE record_identifier = $1
                     "#,
-                    uuid
+            uuid
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Convert DB rows
+        let items: Vec<FileEntry> = rows
+            .into_iter()
+            .map(|r| FileEntry {
+                download_url: Some(r.download_url.clone()),
+                path: r.file_name,
+                is_dir: false,
+                size_bytes: r.file_size.unwrap_or(0) as u64,
+                mime_type: r.file_type,
+                checksum: r.checksum_value,
+                // XXX: should make the name consistent
+                modified_at: DateTime::<Utc>::from_timestamp(
+                    r.updated_at.unix_timestamp(),
+                    r.updated_at.nanosecond(),
                 )
-                .fetch_all(&self.pool)
-                .await?;
+                .unwrap(),
+            })
+            .collect();
 
-                // Convert DB rows
-                let items: Vec<FileEntry> = rows
-                    .into_iter()
-                    .map(|r| FileEntry {
-                        download_url: Some(r.download_url.clone()),
-                        path: r.download_url, // XXX: no path stored
-                        is_dir: false,
-                        size_bytes: r.file_size.unwrap_or(0) as u64,
-                        mime_type: r.file_type,
-                        checksum: r.checksum_value,
-                        // XXX: should make the name consistent
-                        modified_at: DateTime::<Utc>::from_timestamp(
-                            r.updated_at.unix_timestamp(),
-                            r.updated_at.nanosecond(),
-                        )
-                        .unwrap(),
-                    })
-                    .collect();
-
-                Ok(stream::iter(items).boxed())
-            }
-        }
+        Ok(stream::iter(items).boxed())
+        // match resolve(&url).await {
+        //     Ok(ds) => {
+        //         let mp = NoProgress;
+        //         let files = ds
+        //             .crawl_file(&client, mp)
+        //             // TODO: I need log on error cases on the server.
+        //             .filter_map(|f| async move { f.ok() })
+        //             .boxed();
+        //         Ok(files)
+        //     }
+        //     // NOTE: (jyu) fallback to filedb, this should revert with the datahugger fetch.
+        //     // Should go to fileDB first and then goes to datahugger for the latest update.
+        //     Err(err) => {
+        //         eprintln!("resolve failed, fallback to DB: {:?}", err);
+        //         tracing::info!("query for url: {uuid}");
+        //
+        //         let rows = sqlx::query_as!(
+        //             RecordFile,
+        //             r#"
+        //             SELECT
+        //                 download_url,
+        //                 file_type,
+        //                 file_size,
+        //                 checksum_type::text as "checksum_type?",
+        //                 checksum_value,
+        //                 updated_at
+        //             FROM record_files
+        //             WHERE record_identifier = $1
+        //             "#,
+        //             uuid
+        //         )
+        //         .fetch_all(&self.pool)
+        //         .await?;
+        //
+        //         // Convert DB rows
+        //         let items: Vec<FileEntry> = rows
+        //             .into_iter()
+        //             .map(|r| FileEntry {
+        //                 download_url: Some(r.download_url.clone()),
+        //                 path: r.download_url, // XXX: no path stored
+        //                 is_dir: false,
+        //                 size_bytes: r.file_size.unwrap_or(0) as u64,
+        //                 mime_type: r.file_type,
+        //                 checksum: r.checksum_value,
+        //                 // XXX: should make the name consistent
+        //                 modified_at: DateTime::<Utc>::from_timestamp(
+        //                     r.updated_at.unix_timestamp(),
+        //                     r.updated_at.nanosecond(),
+        //                 )
+        //                 .unwrap(),
+        //             })
+        //             .collect();
+        //
+        //         Ok(stream::iter(items).boxed())
+        //     }
+        // }
     }
 }
 
