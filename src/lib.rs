@@ -1,6 +1,9 @@
 pub mod grpc {
     include!("./generated/coordinator.v1.rs");
 }
+
+pub mod rocrate_gen;
+
 use chrono::{DateTime, TimeZone, Utc};
 use datahugger::FileMeta;
 use futures_util::StreamExt;
