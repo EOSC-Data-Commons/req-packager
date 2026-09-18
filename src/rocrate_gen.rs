@@ -408,7 +408,7 @@ impl<'a> RocrateBuilder<'a> {
                         .request
                         .input
                         .slots
-                        .get(&slot.name)
+                        .get(&slot.id)
                         .expect("not able to find the slot name")
                     {
                         let mut entity = json!({
@@ -475,7 +475,34 @@ impl<'a> RocrateBuilder<'a> {
     }
 
     // Formal parameters
-    fn add_formal_parameters(&mut self) {}
+    fn add_formal_parameters(&mut self) {
+        for slot in &self.request.tool.slots {
+            if let Some(slot_value) = self.request.input.slots.get(&slot.name) {
+                let default_value = match slot_value.to_owned() {
+                    SlotValue::Value(value) => value.clone(),
+                    SlotValue::File(file_entry) => {
+                        json!({"@id": file_entry.download_url.unwrap_or(file_entry.path)})
+                    }
+                };
+                self.graph.push(json!({
+                    "@id": format!("#input-{}", &slot.id),
+                    "@type": "FormalParameter",
+                    "name": &slot.name,
+                    "additionalType": &slot.slot_typ,
+                    "required": &slot.is_optional,
+                    "defaultValue": default_value,
+                }))
+            } else {
+                self.graph.push(json!({
+                    "@id": format!("#input-{}", &slot.id),
+                    "@type": "FormalParameter",
+                    "name": &slot.name,
+                    "additionalType": &slot.slot_typ,
+                    "required": &slot.is_optional,
+                }))
+            }
+        }
+    }
 
     // Dataset entity
     fn add_dataset_entity(&mut self) {
@@ -536,6 +563,7 @@ impl<'a> RocrateBuilder<'a> {
         // XXX (jyu): All example in the vre-crate doesn't pass dataset from matchmaker, the example will be
         // used for mybinder tool.
         // self.add_dataset_entity();
+        self.add_formal_parameters();
         self.add_tool_metadata_entity();
         self.add_supporting_entities();
 
@@ -591,6 +619,12 @@ mod tests {
                         slot_typ: SlotTyp::File,
                         is_optional: false,
                     },
+                    Slot {
+                        id: "made_up_value_field".to_string(),
+                        name: "name of the test string".to_string(),
+                        slot_typ: SlotTyp::Str,
+                        is_optional: false,
+                    },
                 ],
 
                 raw_definition: json!({}),
@@ -633,17 +667,25 @@ mod tests {
                             modified_at: DateTime::from_timestamp_nanos(323),
                         }),
                     ),
+                    // XXX (jyu): what if the download_url overlap?
                     (
                         "zipped_folder".to_string(),
                         SlotValue::File(FileEntry {
                             path: "./".to_string(),
-                            download_url: Some("https://example.org/input.csv".to_string()),
+                            download_url: Some(
+                                "https://www.creatis.insa-lyon.fr/~abonnet/basis_11_7.zip"
+                                    .to_string(),
+                            ),
                             size_bytes: 1234,
                             mime_type: Some("text/csv".to_string()),
                             checksum: Some("abcdef123456".to_string()),
                             is_dir: false,
                             modified_at: DateTime::from_timestamp_nanos(323),
                         }),
+                    ),
+                    (
+                        "made_up_value_field".to_string(),
+                        SlotValue::Value(Value::String("value of the test string".to_string())),
                     ),
                 ]),
 
