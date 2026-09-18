@@ -552,31 +552,28 @@ impl<'a> RocrateBuilder<'a> {
             "description": "License not specified by the crate producer",
         }));
     }
-
-    // Build
-    pub fn build(mut self) -> Value {
-        self.add_metadata_descriptor();
-        self.add_root_dataset();
-        self.add_workflow_entity();
-        self.add_programming_language();
-        self.add_slot_entries();
-        // XXX (jyu): All example in the vre-crate doesn't pass dataset from matchmaker, the example will be
-        // used for mybinder tool.
-        // self.add_dataset_entity();
-        self.add_formal_parameters();
-        self.add_tool_metadata_entity();
-        self.add_supporting_entities();
-
-        json!({
-            "@context": "https://w3id.org/ro/crate/1.1/context",
-            "@graph": self.graph
-        })
-    }
 }
 
 // Public convenience function
-pub fn build_from_launch_request(request: &VreLaunchRequest) -> Result<Value, String> {
-    Ok(RocrateBuilder::new(request)?.build())
+pub fn build_rocrate_from_launch_request(request: &VreLaunchRequest) -> anyhow::Result<Value, String> {
+    let mut builder = RocrateBuilder::new(request)?;
+    builder.add_metadata_descriptor();
+    builder.add_root_dataset();
+    builder.add_workflow_entity();
+    builder.add_programming_language();
+    builder.add_slot_entries();
+    // XXX (jyu): All example in the vre-crate doesn't pass dataset from matchmaker, the example will be
+    // used for mybinder tool.
+    // builder.add_dataset_entity();
+    builder.add_formal_parameters();
+    builder.add_tool_metadata_entity();
+    builder.add_supporting_entities();
+
+    let val = json!({
+        "@context": "https://w3id.org/ro/crate/1.1/context",
+        "@graph": builder.graph
+    });
+    Ok(val)
 }
 
 // Example
@@ -695,7 +692,7 @@ mod tests {
             runtime_platform: None,
         };
 
-        let result = build_from_launch_request(&request).unwrap();
+        let result = build_rocrate_from_launch_request(&request).unwrap();
 
         println!("{}", serde_json::to_string_pretty(&result).unwrap());
 

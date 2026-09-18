@@ -10,13 +10,10 @@ use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use indicatif::ProgressBar;
 use req_packager::{
-    grpc::{
+    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo, grpc::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
-    },
-    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
-    FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler,
-    ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo,
+    }, rocrate_gen::{VreLaunchRequest, build_rocrate_from_launch_request},
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -667,6 +664,124 @@ impl Dispatcher for MockDispatcher {
 
         let uid = &user_info.sub;
 
+        let is_vip =
+            tool.types.contains(&"boutique".to_string()) && tool.types.contains(&"vip".to_string());
+        let is_cernbox = tool.types.contains(&"cernbox".to_string());
+
+        // Use cesnet dispatcher
+        // uncomment it out to trigger it in real deployment.
+        // if is_vip || is_cernbox {
+        if false {
+            // create the ro_crate
+            let task_id = uuid::Uuid::new_v4();
+
+            let user_agent = format!(
+                "eosc-coordinator-through-dispatcher/{}",
+                env!("CARGO_PKG_VERSION")
+            );
+            let mut headers = HeaderMap::new();
+            if let Some(key) = api_keys.get("vip") {
+                headers.insert("apikey", HeaderValue::from_str(&key.to_string())?);
+            }
+            let client = ClientBuilder::new()
+                .user_agent(user_agent)
+                .default_headers(headers)
+                .use_native_tls()
+                .build()?;
+
+            #[derive(Deserialize)]
+            struct TaskResponse {
+                task_id: String,
+            }
+
+            let req = VreLaunchRequest {
+                tool: tool.clone(),
+                input: input.clone(),
+                runtime_platform: None,
+            };
+
+            let rocrate = build_rocrate_from_launch_request(&req);
+
+
+            let response = client
+                .post("https://dev1.player.eosc-data-commons.eu/requests/metadata_rocrate/")
+                .header("accept", "*/*")
+                .json(&rocrate)
+                .send()
+                .await?
+                .error_for_status()?;
+
+            let task: TaskResponse = response.json().await?;
+
+            #[derive(Debug, Deserialize)]
+            struct TaskStatus {
+                task_id: String,
+                status: String,
+                result: Option<String>,
+            }
+
+            let dispatcher_task_id = task.task_id;
+
+            let task_status: TaskStatus = client
+                .get(format!(
+                    "https://dev1.player.eosc-data-commons.eu/requests/{dispatcher_task_id}"
+                ))
+                .header("accept", "*/*")
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+
+            let mut attempts = 0;
+            // TODO (jyu): when error out, propagate the errors up to the matchmaker with the whole
+            // ro-crate content and make it downloadable in browser.
+            loop {
+                // PENDING 20 times
+                // Every pending sleep 2 secs, the total time out is 40 secs.
+                if attempts >= 20 {
+                    return Err(anyhow::anyhow!(
+                        "Project did not reach 'Ready' status after 20 attempts"
+                    ));
+                }
+                attempts += 1;
+
+                match task_status.status.as_str() {
+                    "SUCCESS" => {
+                        let artifact = Artifact::HostedTool {
+                            callback: Url::from_str(
+                                &task_status.result.unwrap_or("unknown_result".to_string()),
+                            )
+                            .unwrap(),
+                        };
+                        let task_handler = TaskHandler {
+                            id: HandlerId(task_id),
+                            user_id: UserId(uid.to_string()),
+                            state: ToolState::Ready,
+                            artifact,
+                        };
+
+                        // XXX (jyu): this should be taken care by dispatcher, here has zero
+                        // information on what VRE it is.
+                        let mut db = self.db.write().await;
+                        db.entry(task_id).or_insert(task_handler);
+
+                        return Ok(task_id);
+                    }
+                    "FAILURE" => {
+                        return Err(anyhow::anyhow!("Task failed: {:?}", task_status.result));
+                    }
+                    "PENDING" => {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    status => {
+                        return Err(anyhow::anyhow!("Unknown status: {status}"));
+                    }
+                }
+            }
+        }
+
         if tool.types.contains(&"galaxy_workflow".to_string())
             && tool.types.contains(&"workflowhub".to_string())
         {
@@ -759,6 +874,7 @@ impl Dispatcher for MockDispatcher {
             let artifact = Artifact::HostedTool {
                 callback: callback_url,
             };
+
             // TODO: use TaskHandler::new()
             let task_handler = TaskHandler {
                 id: HandlerId(id),
@@ -784,7 +900,6 @@ impl Dispatcher for MockDispatcher {
             let mut headers = HeaderMap::new();
             if let Some(key) = api_keys.get("vip") {
                 headers.insert("apikey", HeaderValue::from_str(&key.to_string())?);
-                // dbg!(key);
             }
             let client = ClientBuilder::new()
                 .user_agent(user_agent)
