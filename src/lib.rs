@@ -1,6 +1,9 @@
 pub mod grpc {
     include!("./generated/coordinator.v1.rs");
 }
+
+pub mod rocrate_gen;
+
 use chrono::{DateTime, TimeZone, Utc};
 use datahugger::FileMeta;
 use futures_util::StreamExt;
@@ -891,6 +894,14 @@ pub enum RuntimeKind {
     Galaxy,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SlotTyp {
+    Num,  // float and int
+    Flag, // Bool
+    Str,  // string
+    File, // file
+}
+
 // XXX: @reggie where do we need to make the slot type validated?
 // There are following places slot type is passed.
 // - type infos cleaned in tool-registry.
@@ -900,27 +911,33 @@ pub enum RuntimeKind {
 // At the moment, I relay the string to UI.
 // TODO: (jyu) name -> display_name
 // TODO: (jyu) use enum slot_type, num/str/flag/text/file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Slot {
     pub id: String,
     pub name: String,
-    pub slot_type: String,
+    pub slot_typ: SlotTyp,
     pub is_optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
 impl From<Slot> for grpc::Slot {
     fn from(value: Slot) -> Self {
+        let typ = match value.slot_typ {
+            SlotTyp::Num => "number",
+            SlotTyp::Flag => "flag",
+            SlotTyp::Str => "string",
+            SlotTyp::File => "file",
+        };
         grpc::Slot {
             id: value.id,
             name: value.name,
-            typ: value.slot_type,
+            typ: typ.to_string(),
             is_optional: value.is_optional,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolKind {
     DatasetOnly,
     SlotsOnly,
@@ -928,7 +945,7 @@ pub enum ToolKind {
     SlotsAndFiles,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMeta {
     /// Id of EOSC tool, which is the id in the tool registry
     pub id: String,
@@ -1041,21 +1058,24 @@ pub struct AuthToken(String);
 pub type SlotName = String;
 pub type RenameName = String;
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum SlotValue {
     Value(serde_json::Value),
     File(FileEntry),
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DatasetHandle {
     pub url: String,
     pub title: String,
     pub description: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LaunchInput {
     pub dataset: DatasetHandle,
     pub slots: HashMap<SlotName, SlotValue>,
-    pub files: HashMap<RenameName, FileEntry>,
+    pub files: HashMap<RenameName, FileEntry>, // TODO: (jyu) this seems redundant
 }
 
 // TODO: (jyu) use more expressive types instead of String.
@@ -1240,7 +1260,13 @@ impl DataplayerService for Dataplayer {
 
         let task_id = self
             .dispatcher
-            .launch(&grpc_user_info.into(), &token, &tool_meta, &launch_inp, api_keys)
+            .launch(
+                &grpc_user_info.into(),
+                &token,
+                &tool_meta,
+                &launch_inp,
+                api_keys,
+            )
             .await
             .unwrap();
 
