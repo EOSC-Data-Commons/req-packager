@@ -228,6 +228,20 @@ impl ToolRegistry {
 
 // This is the type for the obj get from tool registry.
 // Need to map to the Slot of inner representation.
+// e.g. inputs
+// "inputs": [
+        //     {
+        //         "id": "input.tsv",
+        //         "name": "Zebrafish pectoral-fin gene list",
+        //         "type": [
+        //             "File",
+        //             "TextDigitalDocument"
+        //         ],
+        //         "description": "",
+        //         "additional_type": null,
+        //         "encoding_format": "text/tab-separated-values"
+        //     }
+        // ],
 #[derive(Deserialize, Debug)]
 struct ResponseSlot {
     id: String,
