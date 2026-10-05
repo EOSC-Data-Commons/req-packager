@@ -8,7 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use datahugger::FileMeta;
 use futures_util::StreamExt;
 use jsonwebtoken::dangerous::insecure_decode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 use futures_core::stream::BoxStream;
@@ -20,7 +20,6 @@ use grpc::{
 };
 
 use prost_types::Timestamp;
-use serde::Deserialize;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -945,20 +944,89 @@ pub enum ToolKind {
     SlotsAndFiles,
 }
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMeta {
-    /// Id of EOSC tool, which is the id in the tool registry
-    pub id: String,
-    pub version: String,
-    pub name: String,
-    pub uri: String,
+    pub id: Uuid,
+
+    pub quality_score: Option<f64>,
+
+    // Provenance
+    pub source_identifier: Option<String>,
+    pub source_url: Option<String>,
+    pub metadata_url: Option<String>,
+    pub metadata_format: String,
+    pub metadata_version: Option<String>,
+
+    // CodeMeta / schema.org core
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub raw_description: Option<String>,
+    pub version: Option<String>,
+    pub license: Option<String>,
+
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+
+    pub url: Option<String>,
+    pub code_repository: Option<String>,
+
+    #[serde(default)]
+    pub keywords: Vec<String>,
+
+    #[serde(default)]
+    pub authors: Vec<JsonValue>,
+
+    #[serde(default)]
+    pub organizations: Vec<JsonValue>,
+
+    #[serde(default)]
     pub types: Vec<String>,
-    pub description: String,
-    pub slots: Vec<Slot>,
-    pub kind: ToolKind,
-    // pub runtime: RuntimeMeta,
-    pub raw_definition: JsonValue,
+
+    #[serde(default)]
+    pub programming_languages: Vec<JsonValue>,
+
+    #[serde(default)]
+    pub runtime_platforms: Vec<JsonValue>,
+
+    #[serde(default)]
+    pub software_requirements: Vec<JsonValue>,
+
+    // CodeMeta scientific extensions
+    #[serde(default)]
+    pub software_types: Vec<JsonValue>,
+
+    #[serde(default)]
+    pub consumes_data: Vec<JsonValue>,
+
+    #[serde(default)]
+    pub produces_data: Vec<JsonValue>,
+
+    // RO-Crate inputs/outputs
+    #[serde(default)]
+    pub inputs: Vec<JsonValue>,
+
+    #[serde(default)]
+    pub outputs: Vec<JsonValue>,
+
+    // Source preservation
+    pub raw_metadata: JsonValue,
 }
+
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub struct ToolMeta {
+//     /// Id of EOSC tool, which is the id in the tool registry
+//     pub id: String,
+//     pub version: String,
+//     pub name: String,
+//     pub uri: String,
+//     pub types: Vec<String>,
+//     pub description: String,
+//     pub slots: Vec<Slot>,
+//     pub kind: ToolKind,
+//     // pub runtime: RuntimeMeta,
+//     pub raw_definition: JsonValue,
+// }
 
 impl From<ToolMeta> for grpc::ToolMeta {
     fn from(value: ToolMeta) -> Self {

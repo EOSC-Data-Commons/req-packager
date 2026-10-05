@@ -233,19 +233,27 @@ struct ResponseSlot {
     id: String,
     name: String,
     #[serde(rename = "type")]
-    slot_typ: String,
+    slot_typ: Vec<String>,
+    description: Option<String>,
+    additional_type: Option<String>,
+    encoding_format: Option<String>,
+    #[serde(default)]
     optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
 impl From<ResponseSlot> for Slot {
     fn from(value: ResponseSlot) -> Self {
-        let slot_typ = match value.slot_typ.as_ref() {
-            "string" => SlotTyp::Str,
-            "flag" => SlotTyp::Flag,
-            "number" => SlotTyp::Num,
-            "file" => SlotTyp::File,
-            _ => panic!("unknown type label"),
+        let slot_typ = if value.slot_typ.iter().any(|t| t == "File") {
+            SlotTyp::File
+        } else if value.slot_typ.iter().any(|t| t == "String") {
+            SlotTyp::Str
+        } else if value.slot_typ.iter().any(|t| t == "Boolean") {
+            SlotTyp::Flag
+        } else if value.slot_typ.iter().any(|t| t == "Number") {
+            SlotTyp::Num
+        } else {
+            panic!("unknown type label: {:?}", value.slot_typ);
         };
         Slot {
             id: value.id,
@@ -259,23 +267,28 @@ impl From<ResponseSlot> for Slot {
 // This is the type for handle the API call return form api/tools/{id}
 #[derive(Deserialize, Debug)]
 struct OneToolPinResponse {
-    // id: u64,
-    uri: String,
-    name: String,
+    id: Uuid,
+    #[serde(rename = "uri")]
+    source_url: String,
+    source_identifier: String,
+    #[serde(rename = "name")]
+    title: String,
     description: String,
     types: Vec<String>,
     version: String,
     input_slots: Vec<ResponseSlot>,
-    raw_definition: JsonValue,
+    raw_metadata: JsonValue,
 }
 
 // This is the type for handle the API call return form api/search/ and api/match
-// NOTE: (jyu) this should revisit to align with the schema: https://github.com/EOSC-Data-Commons/toolmeta-models/blob/main/src/toolmeta_models/tool_generic.py
+// NOTE: (jyu) this should revisit to align with the ToolMetadata schema: https://github.com/EOSC-Data-Commons/toolmeta-harvester/blob/main/src/toolmeta_harvester/db/models.py
 #[derive(Deserialize, Debug)]
 struct OneToolSearchResponse {
-    id: u64,
-    uri: String,
-    name: String,
+    id: Uuid,
+    source_url: String,
+    source_identifier: String,
+    #[serde(rename = "name")]
+    title: String,
     description: String,
     types: Vec<String>,
     version: String,
@@ -1712,7 +1725,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // fallback to the production deployment if not specified.
     let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
-        .unwrap_or("https://dev.tools-registry.eosc-data-commons.eu/api/v1".to_string());
+        .unwrap_or("https://tool-registry-api.eosc-data-commons.dansdemo.nl/api/v1".to_string());
 
     let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
