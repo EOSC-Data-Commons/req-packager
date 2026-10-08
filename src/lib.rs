@@ -724,10 +724,23 @@ pub struct RequestPackager {
 //     }
 // }
 //
+
+pub enum ToolSearch<'a> {
+    Files(&'a [FileEntry]),
+    Semantic {
+        query: &'a str,
+        limit: usize,
+    },
+}
+
 #[async_trait::async_trait]
 pub trait ToolSource: Send + Sync + 'static {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>>;
-    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
+    // async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
+    async fn find_tools(
+        &self,
+        search: ToolSearch<'_>,
+    ) -> anyhow::Result<Vec<ToolMeta>>;
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta>;
 }
 
@@ -774,29 +787,34 @@ impl ToolService for ToolDatabase {
             .map(|f| f.into())
             .collect::<Vec<_>>();
 
-        let default_tool = ToolMeta {
-            id: "::st:001".to_string(),
-            version: "v0.1.3".to_string(),
-            name: "EOSC-Data-Commons/binder-python-tool".to_string(),
-            uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
-            types: vec!["general".to_string(), "egi-replay".to_string()],
-            description: "binder python tool in egi-replay".to_string(),
-            slots: vec![],
-            kind: ToolKind::DatasetOnly,
-            raw_definition: json!({
-                "urlpath": "notebooks/python.ipynb"
-            }),
-        };
-        let tools = match self.tool_source.find_tools(&files).await {
+        // let default_tool = ToolMeta {
+        //     id: "::st:001".to_string(),
+        //     version: "v0.1.3".to_string(),
+        //     name: "EOSC-Data-Commons/binder-python-tool".to_string(),
+        //     uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
+        //     types: vec!["general".to_string(), "egi-replay".to_string()],
+        //     description: "binder python tool in egi-replay".to_string(),
+        //     slots: vec![],
+        //     kind: ToolKind::DatasetOnly,
+        //     raw_definition: json!({
+        //         "urlpath": "notebooks/python.ipynb"
+        //     }),
+        // };
+        let tools = match self
+            .tool_source
+            .find_tools(ToolSearch::Files(&files))
+            .await
+        {
             Ok(mut tools) => {
-                if tools.is_empty() {
-                    tools.push(default_tool);
-                }
+                // if tools.is_empty() {
+                //     tools.push(default_tool);
+                // }
                 tools
             }
             Err(_) => {
                 // NOTE: this is the fallback solution when zero tool found
-                vec![default_tool]
+                // vec![default_tool]
+                Vec::new()
             }
         };
         // tracing::info!("tools: {:?}", tools);
@@ -947,69 +965,16 @@ pub enum ToolKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMeta {
-    pub id: Uuid,
-
-    pub quality_score: Option<f64>,
-
-    // Provenance
-    pub source_identifier: Option<String>,
-    pub source_url: Option<String>,
-    pub metadata_url: Option<String>,
-    pub metadata_format: String,
-    pub metadata_version: Option<String>,
-
-    // CodeMeta / schema.org core
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub raw_description: Option<String>,
-    pub version: Option<String>,
-    pub license: Option<String>,
-
-    #[serde(default)]
-    pub identifiers: Vec<String>,
-
-    pub url: Option<String>,
-    pub code_repository: Option<String>,
-
-    #[serde(default)]
-    pub keywords: Vec<String>,
-
-    #[serde(default)]
-    pub authors: Vec<JsonValue>,
-
-    #[serde(default)]
-    pub organizations: Vec<JsonValue>,
-
-    #[serde(default)]
+    /// Id of EOSC tool, which is the id in the tool registry
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    pub uri: String,
     pub types: Vec<String>,
-
-    #[serde(default)]
-    pub programming_languages: Vec<JsonValue>,
-
-    #[serde(default)]
-    pub runtime_platforms: Vec<JsonValue>,
-
-    #[serde(default)]
-    pub software_requirements: Vec<JsonValue>,
-
-    // CodeMeta scientific extensions
-    #[serde(default)]
-    pub software_types: Vec<JsonValue>,
-
-    #[serde(default)]
-    pub consumes_data: Vec<JsonValue>,
-
-    #[serde(default)]
-    pub produces_data: Vec<JsonValue>,
-
-    // RO-Crate inputs/outputs
-    #[serde(default)]
-    pub inputs: Vec<JsonValue>,
-
-    #[serde(default)]
-    pub outputs: Vec<JsonValue>,
-
-    // Source preservation
+    pub description: String,
+    pub slots: Vec<Slot>,
+    pub kind: ToolKind,
+    // pub runtime: RuntimeMeta,
     pub raw_metadata: JsonValue,
 }
 
