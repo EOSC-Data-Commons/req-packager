@@ -103,46 +103,36 @@ impl VreType {
     }
 }
 
-// VRE resolution
 fn tool_type_to_vre_type(value: &str) -> Option<VreType> {
-    match value {
-        "egi-replay" => Some(VreType::Binder),
-        "binder" => Some(VreType::Binder),
-        "galaxy" => Some(VreType::Galaxy),
-        "galaxy_workflow" => Some(VreType::Galaxy),
-        "oscar" => Some(VreType::Oscar),
-        "vip" => Some(VreType::Vip),
-        "boutique" => Some(VreType::Vip),
-        "scipion" => Some(VreType::Scipion),
-        "jupyter" => Some(VreType::Jupyter),
-        "mddash" => Some(VreType::Mddash),
-        "sciencemesh" => Some(VreType::Sciencemesh),
-        "cernbox" => Some(VreType::Sciencemesh),
-        "mybinder" => Some(VreType::Binder),
-        "binder-launcher" => Some(VreType::Binder),
-        "rrp" => Some(VreType::Rrp),
+    let value = value.to_lowercase();
+
+    match value.as_str() {
+        v if v.contains("egi-replay") => Some(VreType::Binder),
+        v if v.contains("binder") => Some(VreType::Binder),
+        v if v.contains("galaxy") => Some(VreType::Galaxy),
+        v if v.contains("oscar") => Some(VreType::Oscar),
+        v if v.contains("vip") => Some(VreType::Vip),
+        v if v.contains("boutique") => Some(VreType::Vip),
+        v if v.contains("scipion") => Some(VreType::Scipion),
+        v if v.contains("jupyter") => Some(VreType::Jupyter),
+        v if v.contains("mddash") => Some(VreType::Mddash),
+        v if v.contains("sciencemesh") => Some(VreType::Sciencemesh),
+        v if v.contains("cernbox") => Some(VreType::Sciencemesh),
+        v if v.contains("rrp") => Some(VreType::Rrp),
+
         _ => None,
     }
 }
 
 pub fn resolve_vre_type(tool: &ToolMeta) -> Result<VreType, String> {
-    // First: explicit raw_definition["vre_type"]
-    if let Some(value) = tool.raw_definition.get("vre_type") {
-        if let Some(value) = value.as_str() {
-            if let Some(vre_type) = VreType::from_str(value) {
-                return Ok(vre_type);
-            }
-        }
-    }
-
-    // Second: tool types
+    // First: tool types
     for tool_type in &tool.types {
         if let Some(vre_type) = tool_type_to_vre_type(tool_type) {
             return Ok(vre_type);
         }
     }
 
-    // Third: URI pattern
+    // Second: URI pattern
     let patterns = [
         ("galaxyproject.org", VreType::Galaxy),
         ("usegalaxy.eu", VreType::Galaxy),
@@ -517,8 +507,8 @@ impl<'a> RocrateBuilder<'a> {
 
     // Tool metadata
     fn add_tool_metadata_entity(&mut self) {
-        let raw_definition = &self.request.tool.raw_definition;
-        if raw_definition.is_null() || raw_definition.as_object().is_some_and(|obj| obj.is_empty())
+        let raw_metadata = &self.request.tool.raw_metadata;
+        if raw_metadata.is_null() || raw_metadata.as_object().is_some_and(|obj| obj.is_empty())
         {
             return;
         }
@@ -526,7 +516,7 @@ impl<'a> RocrateBuilder<'a> {
         self.graph.push(json!({
             "@id": "#tool-metadata",
             "@type": "Thing",
-            "rawDefinition": self.request.tool.raw_definition
+            "rawMetadata": self.request.tool.raw_metadata
         }));
     }
 
@@ -624,7 +614,7 @@ mod tests {
                     },
                 ],
 
-                raw_definition: json!({}),
+                raw_metadata: json!({}),
             },
 
             input: LaunchInput {

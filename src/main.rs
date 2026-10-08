@@ -10,7 +10,7 @@ use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use indicatif::ProgressBar;
 use req_packager::{
-    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo, grpc::{
+    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolSearch, ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo, grpc::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     }, rocrate_gen::{VreLaunchRequest, build_rocrate_from_launch_request},
@@ -38,6 +38,7 @@ use std::{
 };
 use tonic::transport::Server;
 use url::Url;
+
 
 struct DatahuggerDataSource {
     pool: PgPool,
@@ -228,24 +229,46 @@ impl ToolRegistry {
 
 // This is the type for the obj get from tool registry.
 // Need to map to the Slot of inner representation.
+// e.g. inputs
+// "inputs": [
+        //     {
+        //         "id": "input.tsv",
+        //         "name": "Zebrafish pectoral-fin gene list",
+        //         "type": [
+        //             "File",
+        //             "TextDigitalDocument"
+        //         ],
+        //         "description": "",
+        //         "additional_type": null,
+        //         "encoding_format": "text/tab-separated-values"
+        //     }
+        // ],
 #[derive(Deserialize, Debug)]
 struct ResponseSlot {
     id: String,
     name: String,
     #[serde(rename = "type")]
-    slot_typ: String,
+    slot_typ: Vec<String>,
+    description: Option<String>,
+    additional_type: Option<String>,
+    encoding_format: Option<String>,
+    #[serde(default)]
     optional: bool,
     // TODO: file_formats: Vec<String>,
 }
 
 impl From<ResponseSlot> for Slot {
     fn from(value: ResponseSlot) -> Self {
-        let slot_typ = match value.slot_typ.as_ref() {
-            "string" => SlotTyp::Str,
-            "flag" => SlotTyp::Flag,
-            "number" => SlotTyp::Num,
-            "file" => SlotTyp::File,
-            _ => panic!("unknown type label"),
+        let slot_typ = if value.slot_typ.iter().any(|t| t == "File") {
+            SlotTyp::File
+        } else if value.slot_typ.iter().any(|t| t == "String") {
+            SlotTyp::Str
+        } else if value.slot_typ.iter().any(|t| t == "Boolean") {
+            SlotTyp::Flag
+        } else if value.slot_typ.iter().any(|t| t == "Number") {
+            SlotTyp::Num
+        } else {
+            panic!("unknown type label: {:?}", value.slot_typ);
         };
         Slot {
             id: value.id,
@@ -259,137 +282,131 @@ impl From<ResponseSlot> for Slot {
 // This is the type for handle the API call return form api/tools/{id}
 #[derive(Deserialize, Debug)]
 struct OneToolPinResponse {
-    // id: u64,
-    uri: String,
-    name: String,
+    id: Uuid,
+    // #[serde(rename = "uri")]
+    source_url: String,
+    source_identifier: String,
+    // #[serde(rename = "name")]
+    title: String,
     description: String,
     types: Vec<String>,
     version: String,
-    input_slots: Vec<ResponseSlot>,
-    raw_definition: JsonValue,
+    inputs: Vec<ResponseSlot>,
+    raw_metadata: JsonValue,
 }
 
 // This is the type for handle the API call return form api/search/ and api/match
-// NOTE: (jyu) this should revisit to align with the schema: https://github.com/EOSC-Data-Commons/toolmeta-models/blob/main/src/toolmeta_models/tool_generic.py
+// NOTE: (jyu) this should revisit to align with the ToolMetadata schema: https://github.com/EOSC-Data-Commons/toolmeta-harvester/blob/main/src/toolmeta_harvester/db/models.py
 #[derive(Deserialize, Debug)]
 struct OneToolSearchResponse {
-    id: u64,
-    uri: String,
-    name: String,
+    id: String,
+    source_url: String,
+    source_identifier: String,
+    #[serde(rename = "name")]
+    title: String,
     description: String,
     types: Vec<String>,
     version: String,
     input_slots: Option<Vec<ResponseSlot>>,
 }
 
-static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
-    vec![
-        ToolMeta {
-            id: "::st:001".to_string(),
-            version: "v0.1.3".to_string(),
-            name: "EOSC-Data-Commons/binder-python-tool".to_string(),
-            uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
-            types: vec!["general".to_string(), "egi-replay".to_string()],
-            description: "binder python tool in egi-replay".to_string(),
-            slots: vec![],
-            kind: ToolKind::DatasetOnly,
-            raw_definition: json!({
-                "urlpath": "notebooks/python.ipynb"
-            }
-            ),
-        },
-        ToolMeta {
-            id: "::st:002".to_string(),
-            version: "v0".to_string(),
-            name: "Reproduciple Research Platform (RRP)".to_string(),
-            uri: "https://rrp-eosc.ethz.ch/".to_string(),
-            types: vec!["general".to_string(), "rrp".to_string()],
-            description: "RRP as genenal tool".to_string(),
-            slots: vec![
-                Slot {
-                    id: "image_0.tif".to_string(),
-                    name: "Image 0 (TIF)".to_string(),
-                    slot_typ: SlotTyp::File,
-                    is_optional: false,
-                },
-                Slot {
-                    id: "image_1.tif".to_string(),
-                    name: "Image 1 (TIF)".to_string(),
-                    slot_typ: SlotTyp::File,
-                    is_optional: false,
-                },
-            ],
-            kind: ToolKind::DatasetOnly,
-            raw_definition: json!({
-                "repositoryUrl": "https://gitlab.ethz.ch/Reproducible-Research-Platform/tools/Cell-Doubling-Time",
-                "docker_image": "reproducibleresearchplatform/rrp-eosc:cell-doubling-time_1.0.1"
-            }),
-        },
-        ToolMeta {
-            id: "::st:003".to_string(),
-            version: "v0".to_string(),
-            name: "CernBox".to_string(),
-            uri: "cernbox.cern.ch".to_string(),
-            types: vec!["data access".to_string(), "cernbox".to_string()],
-            description: "Tool to send files to CernBox user".to_string(),
-            slots: vec![Slot {
-                id: "shared_with".to_string(),
-                name: "Shared With".to_string(),
-                slot_typ: SlotTyp::Str,
-                is_optional: false,
-            }],
-            kind: ToolKind::SlotsAndFiles,
-            raw_definition: json!({}),
-        },
-    ]
-});
+// static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
+//     vec![
+//         ToolMeta {
+//             id: "::st:001".to_string(),
+//             version: "v0.1.3".to_string(),
+//             name: "EOSC-Data-Commons/binder-python-tool".to_string(),
+//             uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
+//             types: vec!["general".to_string(), "egi-replay".to_string()],
+//             description: "binder python tool in egi-replay".to_string(),
+//             slots: vec![],
+//             kind: ToolKind::DatasetOnly,
+//             raw_definition: json!({
+//                 "urlpath": "notebooks/python.ipynb"
+//             }
+//             ),
+//         },
+//         ToolMeta {
+//             id: "::st:002".to_string(),
+//             version: "v0".to_string(),
+//             name: "Reproduciple Research Platform (RRP)".to_string(),
+//             uri: "https://rrp-eosc.ethz.ch/".to_string(),
+//             types: vec!["general".to_string(), "rrp".to_string()],
+//             description: "RRP as genenal tool".to_string(),
+//             slots: vec![
+//                 Slot {
+//                     id: "image_0.tif".to_string(),
+//                     name: "Image 0 (TIF)".to_string(),
+//                     slot_typ: SlotTyp::File,
+//                     is_optional: false,
+//                 },
+//                 Slot {
+//                     id: "image_1.tif".to_string(),
+//                     name: "Image 1 (TIF)".to_string(),
+//                     slot_typ: SlotTyp::File,
+//                     is_optional: false,
+//                 },
+//             ],
+//             kind: ToolKind::DatasetOnly,
+//             raw_definition: json!({
+//                 "repositoryUrl": "https://gitlab.ethz.ch/Reproducible-Research-Platform/tools/Cell-Doubling-Time",
+//                 "docker_image": "reproducibleresearchplatform/rrp-eosc:cell-doubling-time_1.0.1"
+//             }),
+//         },
+//         ToolMeta {
+//             id: "::st:003".to_string(),
+//             version: "v0".to_string(),
+//             name: "CernBox".to_string(),
+//             uri: "cernbox.cern.ch".to_string(),
+//             types: vec!["data access".to_string(), "cernbox".to_string()],
+//             description: "Tool to send files to CernBox user".to_string(),
+//             slots: vec![Slot {
+//                 id: "shared_with".to_string(),
+//                 name: "Shared With".to_string(),
+//                 slot_typ: SlotTyp::Str,
+//                 is_optional: false,
+//             }],
+//             kind: ToolKind::SlotsAndFiles,
+//             raw_definition: json!({}),
+//         },
+//     ]
+// });
 
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
-        if text.starts_with("::STATIC") {
-            let tools = &TOOLS;
-            return Ok(tools.to_vec());
-        }
-        // http://tool-registry.eosc-data-commons.dansdemo.nl/api/v1/tools/?name=OCR
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
         tracing::info!("url: {}", url);
-        let resp = reqwest::get(url).await?;
-        let resp: Vec<OneToolSearchResponse> = resp.json().await?;
-        let tools = resp
-            .into_iter()
-            .map(|resp| {
-                let slots = if let Some(input_slots) = resp.input_slots {
-                    input_slots
-                        .into_iter()
-                        .map(|s| s.into())
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![]
-                };
 
-                let kind = if resp.types.contains(&"data access".to_string()) {
-                    ToolKind::SlotsAndFiles
-                } else {
-                    ToolKind::SlotsOnly
-                };
-                ToolMeta {
-                    id: resp.id.to_string(),
-                    version: resp.version,
-                    uri: resp.uri,
-                    types: resp.types,
-                    name: resp.name,
-                    description: resp.description,
-                    slots,
-                    kind,
-                    raw_definition: json!({}),
-                }
-            })
-            .collect::<Vec<_>>();
-        return Ok(tools);
+        let resp: Vec<OneToolSearchResponse> = reqwest::get(url)
+            .await?
+            .json()
+            .await?;
+
+        let mut tools = Vec::with_capacity(resp.len());
+
+        for result in resp {
+            tools.push(self.get_tool(&result.id.to_string()).await?);
+        }
+
+        Ok(tools)
     }
 
-    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+
+    // examples:
+    // let tools = self
+    //    .tool_source
+    //    .find_tools(ToolSearch::Files(&files))
+    //    .await?;
+    //
+    //    let tools = self
+    //    .tool_source
+    //    .find_tools(ToolSearch::Semantic {
+    //        query: "I am looking for a tool to evaluate and validate my Cryo-EM data before publication or deposition",
+    //        limit: 5,
+     //   })
+    //.await?;
+    async fn find_tools(&self, search: ToolSearch<'_>) -> anyhow::Result<Vec<ToolMeta>> {
         let client = reqwest::Client::new();
 
         #[derive(Serialize, Debug)]
@@ -399,97 +416,108 @@ impl ToolSource for ToolRegistry {
         }
 
         #[derive(Serialize, Debug)]
-        struct Options {
+        struct FileOptions {
             operator: String,
         }
 
         #[derive(Serialize, Debug)]
-        struct Payload {
-            r#type: String,
-            inputs: Vec<Input>,
-            options: Options,
+        #[serde(tag = "type")]
+        enum Payload {
+            #[serde(rename = "file")]
+            File {
+                inputs: Vec<Input>,
+                options: FileOptions,
+            },
+
+            #[serde(rename = "semantic")]
+            Semantic {
+                query: String,
+                limit: usize,
+            },
         }
 
-        let inputs = files
-            .iter()
-            .map(|f| {
-                let name = PathBuf::from_str(&f.path).unwrap();
-                let name = name.file_name().unwrap().to_str().unwrap();
-                Input {
-                    name: name.to_string(),
-                    mime_type: f.mime_type.clone().unwrap_or("unknown".to_string()),
-                }
-            })
-            .collect();
+        let payload = match search {
+            ToolSearch::Files(files) => {
+                let inputs = files
+                    .iter()
+                    .map(|f| {
+                        let path = PathBuf::from_str(&f.path).unwrap();
+                        let name = path.file_name().unwrap().to_str().unwrap();
 
-        let payload = Payload {
-            r#type: "file".to_string(),
-            inputs,
-            options: Options {
-                operator: "or".to_string(),
-            },
+                        Input {
+                            name: name.to_string(),
+                            mime_type: f
+                                .mime_type
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string()),
+                        }
+                    })
+                    .collect();
+
+                Payload::File {
+                    inputs,
+                    options: FileOptions {
+                        operator: "or".to_string(),
+                    },
+                }
+            }
+
+            ToolSearch::Semantic { query, limit } => {
+                Payload::Semantic {
+                    query: query.to_string(),
+                    limit,
+                }
+            }
         };
 
         let url = format!("{}/tools/match", self.root_api.as_str());
-        let response = client
+
+        let response: Vec<OneToolSearchResponse> = client
             .post(url)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
+            .await?
+            .json()
             .await?;
 
-        let response: Vec<OneToolSearchResponse> = response.json().await.inspect_err(|err| {
-            // dbg!(err);
-        })?;
-        let tools = response
-            .into_iter()
-            .map(|resp| {
-                let slots = if let Some(input_slots) = resp.input_slots {
-                    input_slots
-                        .into_iter()
-                        .map(|s| s.into())
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![]
-                };
+        let mut tools = Vec::with_capacity(response.len());
 
-                let kind = if resp.types.contains(&"data access".to_string()) {
-                    ToolKind::SlotsAndFiles
-                } else {
-                    ToolKind::SlotsOnly
-                };
-                ToolMeta {
-                    id: resp.id.to_string(),
-                    version: resp.version,
-                    uri: resp.uri,
-                    types: resp.types,
-                    name: resp.name,
-                    description: resp.description,
-                    slots,
-                    kind,
-                    raw_definition: json!({}),
-                }
-            })
-            .collect::<Vec<_>>();
+        for result in response {
+            tools.push(self.get_tool(&result.id.to_string()).await?);
+        }
+
         Ok(tools)
     }
-
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
-        if id.starts_with("::st") {
-            if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
-                return Ok(tool.to_owned());
-            }
-        }
-        let url = format!("{}/tools/{}", self.root_api.as_str(), id);
-        let resp: OneToolPinResponse = reqwest::get(url).await?.json().await?;
+        // if id.starts_with("::st") {
+        //     if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
+        //         return Ok(tool.to_owned());
+        //     }
+        // }
+        let tool_url = format!("{}/tools/{}", self.root_api.as_str(), id);
+        let types_url = format!("{}/tools/{}/types", self.root_api.as_str(), id);
+
+        let (tool_resp, types_resp) = tokio::try_join!(
+            reqwest::get(tool_url),
+            reqwest::get(types_url),
+        )?;
+
+        let mut resp: OneToolPinResponse = tool_resp.json().await?;
+        let types: Vec<String> = types_resp.json().await?;
+
+        resp.types = types;
+
         let slots = resp
-            .input_slots
+            .inputs
             .into_iter()
             .map(|s| s.into())
             .collect::<Vec<_>>();
 
+
         // NOTE: (jyu) need to document this so when new VRE onboarding it knows which type to set.
+        // NOTE (reg) tools will not have "data access" we need to derive it from other types?
         let kind = if resp.types.contains(&"data access".to_string()) {
             ToolKind::SlotsAndFiles
         } else {
@@ -498,13 +526,13 @@ impl ToolSource for ToolRegistry {
         let tool = ToolMeta {
             id: id.to_string(),
             version: resp.version,
-            uri: resp.uri,
+            uri: resp.source_url,
             types: resp.types,
-            name: resp.name,
+            name: resp.title,
             description: resp.description,
-            slots,
-            kind,
-            raw_definition: resp.raw_definition,
+            slots: slots,
+            kind: kind,
+            raw_metadata: resp.raw_metadata,
         };
         return Ok(tool);
     }
@@ -1021,7 +1049,7 @@ impl Dispatcher for MockDispatcher {
         } else if tool.types.contains(&"binder-launcher".to_string()) {
             let task_id = uuid::Uuid::new_v4();
 
-            let raw = &tool.raw_definition;
+            let raw = &tool.raw_metadata;
 
             // ---- required fields ----
             let binder_base = raw
@@ -1166,7 +1194,7 @@ impl Dispatcher for MockDispatcher {
             let version = &tool.version;
             // let urlpath = "notebooks/python.ipynb";
             let urlpath = tool
-                .raw_definition
+                .raw_metadata
                 .get("urlpath")
                 .and_then(|v| v.as_str())
                 .expect("didn't find urlpath");
@@ -1410,7 +1438,7 @@ impl Dispatcher for MockDispatcher {
                 .collect();
 
             let image = tool
-                .raw_definition
+                .raw_metadata
                 .get("docker_image")
                 .and_then(|v| v.as_str())
                 .expect("didn't find urlpath");
@@ -1498,7 +1526,7 @@ impl Dispatcher for MockDispatcher {
             }
 
             let repository_url = tool
-                .raw_definition
+                .raw_metadata
                 .get("repositoryUrl")
                 .and_then(|v| v.as_str())
                 .expect("didn't find urlpath");
@@ -1712,7 +1740,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // fallback to the production deployment if not specified.
     let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
-        .unwrap_or("https://dev.tools-registry.eosc-data-commons.eu/api/v1".to_string());
+        .unwrap_or("https://tool-registry-api.eosc-data-commons.dansdemo.nl/api/v1".to_string());
 
     let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
