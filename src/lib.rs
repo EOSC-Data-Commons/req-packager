@@ -825,6 +825,38 @@ impl ToolService for ToolDatabase {
 
         Ok(Response::new(MatchToolsByDataResponse { tools }))
     }
+    
+    async fn match_tools_by_semantic(
+        &self,
+        req: Request<SearchToolsByTextRequest>,
+    ) -> Result<Response<SearchToolsByTextResponse>, Status> {
+        tracing::debug!("Got a request to match tools: {req:?}");
+        let req = req.get_ref();
+        let text = &req.text;
+
+        let tools = match self
+            .tool_source
+            .find_tools(ToolSearch::Semantic {
+                query: text,
+                limit: 5,
+            })
+            .await
+        {
+            Ok(mut tools) => {
+                tools
+            }
+            Err(_) => {
+                Vec::new()
+            }
+        };
+        tracing::debug!("tools: {:?}", tools);
+        let tools = tools
+            .into_iter()
+            .map(|t| t.into())
+            .collect::<Vec<grpc::ToolMeta>>();
+
+        Ok(Response::new(SearchToolsByTextResponse { tools }))
+    }
 
     async fn search_tools_by_text(
         &self,
@@ -978,20 +1010,6 @@ pub struct ToolMeta {
     pub raw_metadata: JsonValue,
 }
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct ToolMeta {
-//     /// Id of EOSC tool, which is the id in the tool registry
-//     pub id: String,
-//     pub version: String,
-//     pub name: String,
-//     pub uri: String,
-//     pub types: Vec<String>,
-//     pub description: String,
-//     pub slots: Vec<Slot>,
-//     pub kind: ToolKind,
-//     // pub runtime: RuntimeMeta,
-//     pub raw_definition: JsonValue,
-// }
 
 impl From<ToolMeta> for grpc::ToolMeta {
     fn from(value: ToolMeta) -> Self {

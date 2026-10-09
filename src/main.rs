@@ -310,73 +310,12 @@ struct OneToolSearchResponse {
     inputs: Option<Vec<ResponseSlot>>,
 }
 
-// static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
-//     vec![
-//         ToolMeta {
-//             id: "::st:001".to_string(),
-//             version: "v0.1.3".to_string(),
-//             name: "EOSC-Data-Commons/binder-python-tool".to_string(),
-//             uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
-//             types: vec!["general".to_string(), "egi-replay".to_string()],
-//             description: "binder python tool in egi-replay".to_string(),
-//             slots: vec![],
-//             kind: ToolKind::DatasetOnly,
-//             raw_definition: json!({
-//                 "urlpath": "notebooks/python.ipynb"
-//             }
-//             ),
-//         },
-//         ToolMeta {
-//             id: "::st:002".to_string(),
-//             version: "v0".to_string(),
-//             name: "Reproduciple Research Platform (RRP)".to_string(),
-//             uri: "https://rrp-eosc.ethz.ch/".to_string(),
-//             types: vec!["general".to_string(), "rrp".to_string()],
-//             description: "RRP as genenal tool".to_string(),
-//             slots: vec![
-//                 Slot {
-//                     id: "image_0.tif".to_string(),
-//                     name: "Image 0 (TIF)".to_string(),
-//                     slot_typ: SlotTyp::File,
-//                     is_optional: false,
-//                 },
-//                 Slot {
-//                     id: "image_1.tif".to_string(),
-//                     name: "Image 1 (TIF)".to_string(),
-//                     slot_typ: SlotTyp::File,
-//                     is_optional: false,
-//                 },
-//             ],
-//             kind: ToolKind::DatasetOnly,
-//             raw_definition: json!({
-//                 "repositoryUrl": "https://gitlab.ethz.ch/Reproducible-Research-Platform/tools/Cell-Doubling-Time",
-//                 "docker_image": "reproducibleresearchplatform/rrp-eosc:cell-doubling-time_1.0.1"
-//             }),
-//         },
-//         ToolMeta {
-//             id: "::st:003".to_string(),
-//             version: "v0".to_string(),
-//             name: "CernBox".to_string(),
-//             uri: "cernbox.cern.ch".to_string(),
-//             types: vec!["data access".to_string(), "cernbox".to_string()],
-//             description: "Tool to send files to CernBox user".to_string(),
-//             slots: vec![Slot {
-//                 id: "shared_with".to_string(),
-//                 name: "Shared With".to_string(),
-//                 slot_typ: SlotTyp::Str,
-//                 is_optional: false,
-//             }],
-//             kind: ToolKind::SlotsAndFiles,
-//             raw_definition: json!({}),
-//         },
-//     ]
-// });
 
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
-        tracing::info!("search_tools_by_text url: {}", url);
+        tracing::debug!("search_tools_by_text url: {}", url);
 
         let response = reqwest::get(&url).await?;
 
@@ -402,14 +341,14 @@ impl ToolSource for ToolRegistry {
         let mut tools = Vec::with_capacity(resp.len());
 
         for result in resp {
-            tracing::info!(
+            tracing::debug!(
                 "search_tools_by_text result id: {}",
                 result.id
             );
 
             let tool = self.get_tool(&result.id.to_string()).await?;
 
-            tracing::info!(
+            tracing::debug!(
                 "search_tools_by_text resolved tool: {:#?}",
                 tool
             );
@@ -419,25 +358,6 @@ impl ToolSource for ToolRegistry {
 
         Ok(tools)
     }
-
-    // async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
-    //     let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
-    //     tracing::info!("url: {}", url);
-    //
-    //     let resp: Vec<OneToolSearchResponse> = reqwest::get(url)
-    //         .await?
-    //         .json()
-    //         .await?;
-    //
-    //     let mut tools = Vec::with_capacity(resp.len());
-    //
-    //     for result in resp {
-    //         tools.push(self.get_tool(&result.id.to_string()).await?);
-    //     }
-    //
-    //     Ok(tools)
-    // }
-    //
 
     // examples:
     // let tools = self
@@ -562,8 +482,8 @@ impl ToolSource for ToolRegistry {
             .await
             .context("failed reading types response body")?;
 
-        tracing::info!("get_tool raw tool response: {}", tool_body);
-        tracing::info!("get_tool raw types response: {}", types_body);
+        tracing::debug!("get_tool raw tool response: {}", tool_body);
+        tracing::debug!("get_tool raw types response: {}", types_body);
 
         let mut resp: OneToolPinResponse =
             serde_json::from_str(&tool_body).with_context(|| {
@@ -601,52 +521,6 @@ impl ToolSource for ToolRegistry {
             raw_metadata: resp.raw_metadata,
         })
     }
-    // async fn _get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
-    //     // if id.starts_with("::st") {
-    //     //     if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
-    //     //         return Ok(tool.to_owned());
-    //     //     }
-    //     // }
-    //     let tool_url = format!("{}/tools/{}", self.root_api.as_str(), id);
-    //     let types_url = format!("{}/tools/{}/types", self.root_api.as_str(), id);
-    //
-    //     let (tool_resp, types_resp) = tokio::try_join!(
-    //         reqwest::get(tool_url),
-    //         reqwest::get(types_url),
-    //     )?;
-    //
-    //     let mut resp: OneToolPinResponse = tool_resp.json().await?;
-    //     let types: Vec<String> = types_resp.json().await?;
-    //
-    //     resp.types = types;
-    //
-    //     let slots = resp
-    //         .inputs
-    //         .into_iter()
-    //         .map(|s| s.into())
-    //         .collect::<Vec<_>>();
-    //
-    //
-    //     // NOTE: (jyu) need to document this so when new VRE onboarding it knows which type to set.
-    //     // NOTE (reg) tools will not have "data access" we need to derive it from other types?
-    //     let kind = if resp.types.contains(&"data access".to_string()) {
-    //         ToolKind::SlotsAndFiles
-    //     } else {
-    //         ToolKind::SlotsOnly
-    //     };
-    //     let tool = ToolMeta {
-    //         id: id.to_string(),
-    //         version: resp.version,
-    //         uri: resp.source_url,
-    //         types: resp.types,
-    //         name: resp.title,
-    //         description: resp.description,
-    //         slots: slots,
-    //         kind: kind,
-    //         raw_metadata: resp.raw_metadata,
-    //     };
-    //     return Ok(tool);
-    // }
 }
 
 struct MockDispatcher {

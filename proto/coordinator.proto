@@ -211,6 +211,8 @@ service ToolService {
   // Match tools from the file list input provided, and maybe some information from user profile. 
   rpc MatchToolsByData(MatchToolsByDataRequest) returns (MatchToolsByDataResponse);
 
+  rpc MatchToolsBySemantic(SearchToolsByTextRequest) returns (SearchToolsByTextResponse);
+
   // Search tools from an input text
   rpc SearchToolsByText(SearchToolsByTextRequest) returns (SearchToolsByTextResponse);
 
