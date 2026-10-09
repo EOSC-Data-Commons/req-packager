@@ -38,6 +38,7 @@ use std::{
 };
 use tonic::transport::Server;
 use url::Url;
+use anyhow::Context;
 
 
 struct DatahuggerDataSource {
@@ -282,15 +283,14 @@ impl From<ResponseSlot> for Slot {
 // This is the type for handle the API call return form api/tools/{id}
 #[derive(Deserialize, Debug)]
 struct OneToolPinResponse {
-    id: Uuid,
-    // #[serde(rename = "uri")]
+    id: String,
     source_url: String,
     source_identifier: String,
-    // #[serde(rename = "name")]
-    title: String,
-    description: String,
+    #[serde(rename = "title")]
+    name: String,
+    description: Option<String>,
     types: Vec<String>,
-    version: String,
+    version: Option<String>,
     inputs: Vec<ResponseSlot>,
     raw_metadata: JsonValue,
 }
@@ -302,12 +302,12 @@ struct OneToolSearchResponse {
     id: String,
     source_url: String,
     source_identifier: String,
-    #[serde(rename = "name")]
-    title: String,
-    description: String,
+    #[serde(rename = "title")]
+    name: String,
+    description: Option<String>,
     types: Vec<String>,
-    version: String,
-    input_slots: Option<Vec<ResponseSlot>>,
+    version: Option<String>,
+    inputs: Option<Vec<ResponseSlot>>,
 }
 
 // static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
@@ -376,22 +376,68 @@ struct OneToolSearchResponse {
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
         let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
-        tracing::info!("url: {}", url);
+        tracing::info!("search_tools_by_text url: {}", url);
 
-        let resp: Vec<OneToolSearchResponse> = reqwest::get(url)
-            .await?
-            .json()
-            .await?;
+        let response = reqwest::get(&url).await?;
+
+        tracing::debug!(
+            "search_tools_by_text status: {}",
+            response.status()
+        );
+
+        let body = response.text().await?;
+
+        tracing::debug!(
+            "search_tools_by_text raw response: {}",
+            body
+        );
+
+        let resp: Vec<OneToolSearchResponse> = serde_json::from_str(&body)?;
+
+        tracing::debug!(
+            "search_tools_by_text parsed response: {:#?}",
+            resp
+        );
 
         let mut tools = Vec::with_capacity(resp.len());
 
         for result in resp {
-            tools.push(self.get_tool(&result.id.to_string()).await?);
+            tracing::info!(
+                "search_tools_by_text result id: {}",
+                result.id
+            );
+
+            let tool = self.get_tool(&result.id.to_string()).await?;
+
+            tracing::info!(
+                "search_tools_by_text resolved tool: {:#?}",
+                tool
+            );
+
+            tools.push(tool);
         }
 
         Ok(tools)
     }
 
+    // async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
+    //     let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
+    //     tracing::info!("url: {}", url);
+    //
+    //     let resp: Vec<OneToolSearchResponse> = reqwest::get(url)
+    //         .await?
+    //         .json()
+    //         .await?;
+    //
+    //     let mut tools = Vec::with_capacity(resp.len());
+    //
+    //     for result in resp {
+    //         tools.push(self.get_tool(&result.id.to_string()).await?);
+    //     }
+    //
+    //     Ok(tools)
+    // }
+    //
 
     // examples:
     // let tools = self
@@ -490,52 +536,117 @@ impl ToolSource for ToolRegistry {
 
         Ok(tools)
     }
+
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
-        // if id.starts_with("::st") {
-        //     if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
-        //         return Ok(tool.to_owned());
-        //     }
-        // }
         let tool_url = format!("{}/tools/{}", self.root_api.as_str(), id);
         let types_url = format!("{}/tools/{}/types", self.root_api.as_str(), id);
 
+        tracing::info!("get_tool tool_url: {}", tool_url);
+        tracing::info!("get_tool types_url: {}", types_url);
+
         let (tool_resp, types_resp) = tokio::try_join!(
-            reqwest::get(tool_url),
-            reqwest::get(types_url),
+            reqwest::get(&tool_url),
+            reqwest::get(&types_url),
         )?;
 
-        let mut resp: OneToolPinResponse = tool_resp.json().await?;
-        let types: Vec<String> = types_resp.json().await?;
+        tracing::info!("get_tool tool status: {}", tool_resp.status());
+        tracing::info!("get_tool types status: {}", types_resp.status());
+
+        let tool_body = tool_resp
+            .text()
+            .await
+            .context("failed reading tool response body")?;
+
+        let types_body = types_resp
+            .text()
+            .await
+            .context("failed reading types response body")?;
+
+        tracing::info!("get_tool raw tool response: {}", tool_body);
+        tracing::info!("get_tool raw types response: {}", types_body);
+
+        let mut resp: OneToolPinResponse =
+            serde_json::from_str(&tool_body).with_context(|| {
+                format!("failed deserializing tool response for id {}", id)
+            })?;
+
+        let types: Vec<String> =
+            serde_json::from_str(&types_body).with_context(|| {
+                format!("failed deserializing types response for id {}", id)
+            })?;
 
         resp.types = types;
 
         let slots = resp
             .inputs
             .into_iter()
-            .map(|s| s.into())
+            .map(Into::into)
             .collect::<Vec<_>>();
 
-
-        // NOTE: (jyu) need to document this so when new VRE onboarding it knows which type to set.
-        // NOTE (reg) tools will not have "data access" we need to derive it from other types?
-        let kind = if resp.types.contains(&"data access".to_string()) {
+        let kind = if resp.types.iter().any(|t| t == "data access") {
             ToolKind::SlotsAndFiles
         } else {
             ToolKind::SlotsOnly
         };
-        let tool = ToolMeta {
+
+        Ok(ToolMeta {
             id: id.to_string(),
-            version: resp.version,
+            version: resp.version.unwrap_or_default(),
             uri: resp.source_url,
             types: resp.types,
-            name: resp.title,
-            description: resp.description,
-            slots: slots,
-            kind: kind,
+            name: resp.name,
+            description: resp.description.unwrap_or_default(),
+            slots,
+            kind,
             raw_metadata: resp.raw_metadata,
-        };
-        return Ok(tool);
+        })
     }
+    // async fn _get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
+    //     // if id.starts_with("::st") {
+    //     //     if let Some(tool) = TOOLS.to_vec().iter().find(|&t| t.id == id) {
+    //     //         return Ok(tool.to_owned());
+    //     //     }
+    //     // }
+    //     let tool_url = format!("{}/tools/{}", self.root_api.as_str(), id);
+    //     let types_url = format!("{}/tools/{}/types", self.root_api.as_str(), id);
+    //
+    //     let (tool_resp, types_resp) = tokio::try_join!(
+    //         reqwest::get(tool_url),
+    //         reqwest::get(types_url),
+    //     )?;
+    //
+    //     let mut resp: OneToolPinResponse = tool_resp.json().await?;
+    //     let types: Vec<String> = types_resp.json().await?;
+    //
+    //     resp.types = types;
+    //
+    //     let slots = resp
+    //         .inputs
+    //         .into_iter()
+    //         .map(|s| s.into())
+    //         .collect::<Vec<_>>();
+    //
+    //
+    //     // NOTE: (jyu) need to document this so when new VRE onboarding it knows which type to set.
+    //     // NOTE (reg) tools will not have "data access" we need to derive it from other types?
+    //     let kind = if resp.types.contains(&"data access".to_string()) {
+    //         ToolKind::SlotsAndFiles
+    //     } else {
+    //         ToolKind::SlotsOnly
+    //     };
+    //     let tool = ToolMeta {
+    //         id: id.to_string(),
+    //         version: resp.version,
+    //         uri: resp.source_url,
+    //         types: resp.types,
+    //         name: resp.title,
+    //         description: resp.description,
+    //         slots: slots,
+    //         kind: kind,
+    //         raw_metadata: resp.raw_metadata,
+    //     };
+    //     return Ok(tool);
+    // }
 }
 
 struct MockDispatcher {
