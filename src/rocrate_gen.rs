@@ -393,7 +393,7 @@ impl<'a> RocrateBuilder<'a> {
     fn add_slot_entries(&mut self) {
         for slot in &self.request.tool.slots {
             match slot.slot_typ {
-                SlotTyp::Num | SlotTyp::Flag | SlotTyp::Str => {
+                SlotTyp::FormalParameter | SlotTyp::Unknown | SlotTyp::Num | SlotTyp::Flag | SlotTyp::Str => {
                     if let SlotValue::Value(value) = self
                         .request
                         .input

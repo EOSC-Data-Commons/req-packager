@@ -260,17 +260,27 @@ struct ResponseSlot {
 
 impl From<ResponseSlot> for Slot {
     fn from(value: ResponseSlot) -> Self {
-        let slot_typ = if value.slot_typ.iter().any(|t| t == "File") {
+        let types: Vec<String> = value.slot_typ
+            .iter()
+            .map(|t| t.to_ascii_lowercase())
+            .collect();
+
+        let has = |substring: &str| types.iter().any(|t| t.contains(substring));
+
+        let slot_typ = if has("file") {
             SlotTyp::File
-        } else if value.slot_typ.iter().any(|t| t == "String") {
+        } else if has("string") {
             SlotTyp::Str
-        } else if value.slot_typ.iter().any(|t| t == "Boolean") {
+        } else if has("boolean") {
             SlotTyp::Flag
-        } else if value.slot_typ.iter().any(|t| t == "Number") {
+        } else if has("number") {
             SlotTyp::Num
+        } else if has("formalparameter") {
+            SlotTyp::FormalParameter
         } else {
-            panic!("unknown type label: {:?}", value.slot_typ);
+            SlotTyp::Unknown
         };
+
         Slot {
             id: value.id,
             slot_typ,
@@ -310,6 +320,35 @@ struct OneToolSearchResponse {
     inputs: Option<Vec<ResponseSlot>>,
 }
 
+impl From<OneToolSearchResponse> for ToolMeta {
+    fn from(resp: OneToolSearchResponse) -> Self {
+        let slots = resp
+            .inputs
+            .unwrap_or_default()
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        let kind = if resp.types.iter().any(|t| t == "data access") {
+            ToolKind::SlotsAndFiles
+        } else {
+            ToolKind::SlotsOnly
+        };
+
+        Self {
+            id: resp.id.to_string(),
+            version: resp.version.unwrap_or_default(),
+            uri: resp.source_url,
+            types: resp.types,
+            name: resp.name,
+            description: resp.description.unwrap_or_default(),
+            slots,
+            kind,
+            raw_metadata: serde_json::Value::Null,
+        }
+    }
+}
+
 
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
@@ -332,29 +371,8 @@ impl ToolSource for ToolRegistry {
         );
 
         let resp: Vec<OneToolSearchResponse> = serde_json::from_str(&body)?;
+        let tools: Vec<ToolMeta> = resp.into_iter().map(Into::into).collect();
 
-        tracing::debug!(
-            "search_tools_by_text parsed response: {:#?}",
-            resp
-        );
-
-        let mut tools = Vec::with_capacity(resp.len());
-
-        for result in resp {
-            tracing::debug!(
-                "search_tools_by_text result id: {}",
-                result.id
-            );
-
-            let tool = self.get_tool(&result.id.to_string()).await?;
-
-            tracing::debug!(
-                "search_tools_by_text resolved tool: {:#?}",
-                tool
-            );
-
-            tools.push(tool);
-        }
 
         Ok(tools)
     }
@@ -447,55 +465,41 @@ impl ToolSource for ToolRegistry {
             .await?
             .json()
             .await?;
+        
+        let tools: Vec<ToolMeta> = response.into_iter().map(Into::into).collect();
 
-        let mut tools = Vec::with_capacity(response.len());
-
-        for result in response {
-            tools.push(self.get_tool(&result.id.to_string()).await?);
-        }
+        // let mut tools = Vec::with_capacity(response.len());
+        //
+        // for result in response {
+        //     tools.push(self.get_tool(&result.id.to_string()).await?);
+        // }
 
         Ok(tools)
     }
 
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
         let tool_url = format!("{}/tools/{}", self.root_api.as_str(), id);
-        let types_url = format!("{}/tools/{}/types", self.root_api.as_str(), id);
 
         tracing::info!("get_tool tool_url: {}", tool_url);
-        tracing::info!("get_tool types_url: {}", types_url);
-
-        let (tool_resp, types_resp) = tokio::try_join!(
-            reqwest::get(&tool_url),
-            reqwest::get(&types_url),
-        )?;
+        let tool_resp = reqwest::get(&tool_url)
+            .await
+            .context("failed requesting tool")?
+            .error_for_status()
+            .context("failed fetching tool")?;
 
         tracing::info!("get_tool tool status: {}", tool_resp.status());
-        tracing::info!("get_tool types status: {}", types_resp.status());
 
         let tool_body = tool_resp
             .text()
             .await
             .context("failed reading tool response body")?;
 
-        let types_body = types_resp
-            .text()
-            .await
-            .context("failed reading types response body")?;
-
         tracing::debug!("get_tool raw tool response: {}", tool_body);
-        tracing::debug!("get_tool raw types response: {}", types_body);
 
         let mut resp: OneToolPinResponse =
             serde_json::from_str(&tool_body).with_context(|| {
                 format!("failed deserializing tool response for id {}", id)
             })?;
-
-        let types: Vec<String> =
-            serde_json::from_str(&types_body).with_context(|| {
-                format!("failed deserializing types response for id {}", id)
-            })?;
-
-        resp.types = types;
 
         let slots = resp
             .inputs

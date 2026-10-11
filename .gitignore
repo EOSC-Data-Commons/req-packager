@@ -13,3 +13,8 @@ devenv.local.yaml
 # Added by cargo
 
 /target
+
+# Node stuff when generating protobuf
+/node_modules
+package-lock.json
+package.json

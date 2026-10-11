@@ -949,6 +949,8 @@ pub enum SlotTyp {
     Flag, // Bool
     Str,  // string
     File, // file
+    FormalParameter, // FormalParameter
+    Unknown, //Unkown types
 }
 
 // XXX: @reggie where do we need to make the slot type validated?
@@ -976,6 +978,8 @@ impl From<Slot> for grpc::Slot {
             SlotTyp::Flag => "flag",
             SlotTyp::Str => "string",
             SlotTyp::File => "file",
+            SlotTyp::FormalParameter => "string",
+            SlotTyp::Unknown => "string",
         };
         grpc::Slot {
             id: value.id,
