@@ -8,7 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use datahugger::FileMeta;
 use futures_util::StreamExt;
 use jsonwebtoken::dangerous::insecure_decode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 use futures_core::stream::BoxStream;
@@ -20,7 +20,6 @@ use grpc::{
 };
 
 use prost_types::Timestamp;
-use serde::Deserialize;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -725,10 +724,23 @@ pub struct RequestPackager {
 //     }
 // }
 //
+
+pub enum ToolSearch<'a> {
+    Files(&'a [FileEntry]),
+    Semantic {
+        query: &'a str,
+        limit: usize,
+    },
+}
+
 #[async_trait::async_trait]
 pub trait ToolSource: Send + Sync + 'static {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>>;
-    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
+    // async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>>;
+    async fn find_tools(
+        &self,
+        search: ToolSearch<'_>,
+    ) -> anyhow::Result<Vec<ToolMeta>>;
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta>;
 }
 
@@ -775,29 +787,34 @@ impl ToolService for ToolDatabase {
             .map(|f| f.into())
             .collect::<Vec<_>>();
 
-        let default_tool = ToolMeta {
-            id: "::st:001".to_string(),
-            version: "v0.1.3".to_string(),
-            name: "EOSC-Data-Commons/binder-python-tool".to_string(),
-            uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
-            types: vec!["general".to_string(), "egi-replay".to_string()],
-            description: "binder python tool in egi-replay".to_string(),
-            slots: vec![],
-            kind: ToolKind::DatasetOnly,
-            raw_definition: json!({
-                "urlpath": "notebooks/python.ipynb"
-            }),
-        };
-        let tools = match self.tool_source.find_tools(&files).await {
+        // let default_tool = ToolMeta {
+        //     id: "::st:001".to_string(),
+        //     version: "v0.1.3".to_string(),
+        //     name: "EOSC-Data-Commons/binder-python-tool".to_string(),
+        //     uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
+        //     types: vec!["general".to_string(), "egi-replay".to_string()],
+        //     description: "binder python tool in egi-replay".to_string(),
+        //     slots: vec![],
+        //     kind: ToolKind::DatasetOnly,
+        //     raw_definition: json!({
+        //         "urlpath": "notebooks/python.ipynb"
+        //     }),
+        // };
+        let tools = match self
+            .tool_source
+            .find_tools(ToolSearch::Files(&files))
+            .await
+        {
             Ok(mut tools) => {
-                if tools.is_empty() {
-                    tools.push(default_tool);
-                }
+                // if tools.is_empty() {
+                //     tools.push(default_tool);
+                // }
                 tools
             }
             Err(_) => {
                 // NOTE: this is the fallback solution when zero tool found
-                vec![default_tool]
+                // vec![default_tool]
+                Vec::new()
             }
         };
         // tracing::info!("tools: {:?}", tools);
@@ -807,6 +824,38 @@ impl ToolService for ToolDatabase {
             .collect::<Vec<grpc::ToolMeta>>();
 
         Ok(Response::new(MatchToolsByDataResponse { tools }))
+    }
+    
+    async fn match_tools_by_semantic(
+        &self,
+        req: Request<SearchToolsByTextRequest>,
+    ) -> Result<Response<SearchToolsByTextResponse>, Status> {
+        tracing::debug!("Got a request to match tools: {req:?}");
+        let req = req.get_ref();
+        let text = &req.text;
+
+        let tools = match self
+            .tool_source
+            .find_tools(ToolSearch::Semantic {
+                query: text,
+                limit: 5,
+            })
+            .await
+        {
+            Ok(mut tools) => {
+                tools
+            }
+            Err(_) => {
+                Vec::new()
+            }
+        };
+        tracing::debug!("tools: {:?}", tools);
+        let tools = tools
+            .into_iter()
+            .map(|t| t.into())
+            .collect::<Vec<grpc::ToolMeta>>();
+
+        Ok(Response::new(SearchToolsByTextResponse { tools }))
     }
 
     async fn search_tools_by_text(
@@ -824,7 +873,7 @@ impl ToolService for ToolDatabase {
             .map_err(|err| {
                 Status::not_found(format!("not find tool, search_tools_by_text, {err}"))
             })?;
-        tracing::info!("tools: {:?}", tools);
+        tracing::debug!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
             .map(|t| t.into())
@@ -900,6 +949,8 @@ pub enum SlotTyp {
     Flag, // Bool
     Str,  // string
     File, // file
+    FormalParameter, // FormalParameter
+    Unknown, //Unkown types
 }
 
 // XXX: @reggie where do we need to make the slot type validated?
@@ -927,6 +978,8 @@ impl From<Slot> for grpc::Slot {
             SlotTyp::Flag => "flag",
             SlotTyp::Str => "string",
             SlotTyp::File => "file",
+            SlotTyp::FormalParameter => "string",
+            SlotTyp::Unknown => "string",
         };
         grpc::Slot {
             id: value.id,
@@ -945,6 +998,7 @@ pub enum ToolKind {
     SlotsAndFiles,
 }
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMeta {
     /// Id of EOSC tool, which is the id in the tool registry
@@ -957,8 +1011,9 @@ pub struct ToolMeta {
     pub slots: Vec<Slot>,
     pub kind: ToolKind,
     // pub runtime: RuntimeMeta,
-    pub raw_definition: JsonValue,
+    pub raw_metadata: JsonValue,
 }
+
 
 impl From<ToolMeta> for grpc::ToolMeta {
     fn from(value: ToolMeta) -> Self {
