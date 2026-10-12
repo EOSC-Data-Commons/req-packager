@@ -357,7 +357,7 @@ impl From<OneToolSearchResponse> for ToolMeta {
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
-        let url = format!("{}/tools/?name={}", self.root_api.as_str(), text);
+        let url = format!("{}/tools/?name={}&limit=5", self.root_api.as_str(), text);
         tracing::debug!("search_tools_by_text url: {}", url);
 
         let response = reqwest::get(&url).await?;
