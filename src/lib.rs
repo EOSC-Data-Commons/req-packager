@@ -873,7 +873,7 @@ impl ToolService for ToolDatabase {
             .map_err(|err| {
                 Status::not_found(format!("not find tool, search_tools_by_text, {err}"))
             })?;
-        tracing::info!("tools: {:?}", tools);
+        tracing::debug!("tools: {:?}", tools);
         let tools = tools
             .into_iter()
             .map(|t| t.into())
