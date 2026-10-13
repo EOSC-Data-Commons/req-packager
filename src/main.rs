@@ -10,10 +10,14 @@ use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use indicatif::ProgressBar;
 use req_packager::{
-    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo, grpc::{
+    grpc::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
-    }, rocrate_gen::{VreLaunchRequest, build_rocrate_from_launch_request},
+    },
+    rocrate_gen::{build_rocrate_from_launch_request, VreLaunchRequest},
+    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
+    FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler,
+    ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -671,7 +675,7 @@ impl Dispatcher for MockDispatcher {
         // Use cesnet dispatcher
         // uncomment it out to trigger it in real deployment.
         // if is_vip || is_cernbox {
-        if false {
+        if is_cernbox {
             // create the ro_crate
             let task_id = uuid::Uuid::new_v4();
 
@@ -679,13 +683,8 @@ impl Dispatcher for MockDispatcher {
                 "eosc-coordinator-through-dispatcher/{}",
                 env!("CARGO_PKG_VERSION")
             );
-            let mut headers = HeaderMap::new();
-            if let Some(key) = api_keys.get("vip") {
-                headers.insert("apikey", HeaderValue::from_str(&key.to_string())?);
-            }
             let client = ClientBuilder::new()
                 .user_agent(user_agent)
-                .default_headers(headers)
                 .use_native_tls()
                 .build()?;
 
@@ -693,6 +692,9 @@ impl Dispatcher for MockDispatcher {
             struct TaskResponse {
                 task_id: String,
             }
+
+            dbg!(&tool);
+            dbg!(&input);
 
             let req = VreLaunchRequest {
                 tool: tool.clone(),
@@ -702,11 +704,10 @@ impl Dispatcher for MockDispatcher {
 
             let rocrate = build_rocrate_from_launch_request(&req);
 
-
             let response = client
-                .post("https://dev1.player.eosc-data-commons.eu/requests/metadata_rocrate/")
-                .header("accept", "*/*")
-                .json(&rocrate)
+                .post("https://dev2.player.eosc-data-commons.eu/requests/metadata_rocrate/")
+                .bearer_auth(token)
+                .json(&rocrate?)
                 .send()
                 .await?
                 .error_for_status()?;
@@ -714,29 +715,41 @@ impl Dispatcher for MockDispatcher {
             let task: TaskResponse = response.json().await?;
 
             #[derive(Debug, Deserialize)]
+            struct TaskResult {
+                url: String,
+            }
+
+            #[derive(Debug, Deserialize)]
             struct TaskStatus {
                 task_id: String,
                 status: String,
-                result: Option<String>,
+                result: Option<TaskResult>,
             }
 
             let dispatcher_task_id = task.task_id;
-
-            let task_status: TaskStatus = client
-                .get(format!(
-                    "https://dev1.player.eosc-data-commons.eu/requests/{dispatcher_task_id}"
-                ))
-                .header("accept", "*/*")
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
+            tracing::debug!("task_id {}", dispatcher_task_id);
 
             let mut attempts = 0;
             // TODO (jyu): when error out, propagate the errors up to the matchmaker with the whole
             // ro-crate content and make it downloadable in browser.
             loop {
+                let task_status: TaskStatus = client
+                    .get(format!(
+                        "https://dev2.player.eosc-data-commons.eu/requests/{dispatcher_task_id}"
+                    ))
+                    .bearer_auth(token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+
+                tracing::info!(
+                    "task_state id: {}, state: {}",
+                    task_status.task_id,
+                    task_status.status
+                );
+
                 // PENDING 20 times
                 // Every pending sleep 2 secs, the total time out is 40 secs.
                 if attempts >= 20 {
@@ -745,12 +758,17 @@ impl Dispatcher for MockDispatcher {
                     ));
                 }
                 attempts += 1;
+                let st = task_status.status.as_str();
+                tracing::debug!("state: {}", st);
 
-                match task_status.status.as_str() {
+                match st {
                     "SUCCESS" => {
                         let artifact = Artifact::HostedTool {
                             callback: Url::from_str(
-                                &task_status.result.unwrap_or("unknown_result".to_string()),
+                                &task_status
+                                    .result
+                                    .map(|result| result.url)
+                                    .unwrap_or("unknown_result".to_string()),
                             )
                             .unwrap(),
                         };
