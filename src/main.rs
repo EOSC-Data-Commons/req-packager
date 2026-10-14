@@ -693,9 +693,6 @@ impl Dispatcher for MockDispatcher {
                 task_id: String,
             }
 
-            dbg!(&tool);
-            dbg!(&input);
-
             let req = VreLaunchRequest {
                 tool: tool.clone(),
                 input: input.clone(),
