@@ -470,7 +470,7 @@ impl ToolSource for ToolRegistry {
             .json()
             .await?;
         
-        let tools: Vec<ToolMeta> = response.into_iter().map(Into::into).collect();
+        let tools: Vec<ToolMeta> = response.into_iter().map(|resp| {resp.into()}).collect();
 
         // let mut tools = Vec::with_capacity(response.len());
         //
