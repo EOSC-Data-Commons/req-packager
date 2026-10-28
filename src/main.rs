@@ -1758,9 +1758,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let data_relayer = DataRelayer::new(data_src);
 
-    // fallback to the production deployment if not specified.
-    let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
-        .unwrap_or("https://tool-registry-api.eosc-data-commons.dansdemo.nl/api/v1".to_string());
+    // NOTE: Use dans API only for the development phase, it will convert to using API deployed at
+    // cyfronet in the tagged releases.
+    //
+    // let tool_registry_api = std::env::var("TOOL_REGISTRY_API")
+    //     .unwrap_or("https://tool-registry-api.eosc-data-commons.dansdemo.nl/api/v1".to_string());
+    let tool_registry_api =
+        "https://tool-registry-api.eosc-data-commons.dansdemo.nl/api/v1".to_string();
 
     let root_api = Url::from_str(&tool_registry_api).expect("invalid url");
     let tool_src = Arc::new(ToolRegistry::new(root_api));
