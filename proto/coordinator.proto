@@ -187,14 +187,6 @@ message ToolResponse {
   ToolMeta tool = 1;
 }
 
-message MatchToolsByDataRequest {
-  repeated FileEntry files = 2;
-}
-// Match Tools response include the tool response and the state of the stream
-message MatchToolsByDataResponse {
-  repeated ToolMeta tools = 1;
-}
-
 message SearchToolsByTextRequest {
   string text = 1;
 }
@@ -207,9 +199,6 @@ message SearchToolsByTextResponse {
 service ToolService {
   // Get a specific tool by id
   rpc GetTool(GetToolRequest) returns (ToolResponse); 
-
-  // Match tools from the file list input provided, and maybe some information from user profile. 
-  rpc MatchToolsByData(MatchToolsByDataRequest) returns (MatchToolsByDataResponse);
 
   // MAtch tools using embeddings
   rpc MatchToolsBySemantic(SearchToolsByTextRequest) returns (SearchToolsByTextResponse);

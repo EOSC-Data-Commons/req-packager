@@ -34,7 +34,13 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use anyhow::Context;
-use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    str::FromStr,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 use tonic::transport::Server;
 use url::Url;
 
@@ -347,6 +353,68 @@ impl From<OneToolSearchResponse> for ToolMeta {
     }
 }
 
+static TOOLS: LazyLock<Vec<ToolMeta>> = LazyLock::new(|| {
+    vec![
+        ToolMeta {
+            id: "::st:001".to_string(),
+            version: "v0.1.3".to_string(),
+            name: "EOSC-Data-Commons/binder-python-tool".to_string(),
+            uri: "https://github.com/EOSC-Data-Commons/binder-python-tool".to_string(),
+            types: vec!["general".to_string(), "egi-replay".to_string()],
+            description: "binder python tool in egi-replay".to_string(),
+            slots: vec![],
+            kind: ToolKind::DatasetOnly,
+            raw_metadata: json!({
+                "urlpath": "notebooks/python.ipynb"
+            }
+            ),
+        },
+        ToolMeta {
+            id: "::st:002".to_string(),
+            version: "v0".to_string(),
+            name: "Reproduciple Research Platform (RRP)".to_string(),
+            uri: "https://rrp-eosc.ethz.ch/".to_string(),
+            types: vec!["general".to_string(), "rrp".to_string()],
+            description: "RRP as genenal tool".to_string(),
+            slots: vec![
+                Slot {
+                    id: "image_0.tif".to_string(),
+                    name: "Image 0 (TIF)".to_string(),
+                    slot_typ: SlotTyp::File,
+                    is_optional: false,
+                },
+                Slot {
+                    id: "image_1.tif".to_string(),
+                    name: "Image 1 (TIF)".to_string(),
+                    slot_typ: SlotTyp::File,
+                    is_optional: false,
+                },
+            ],
+            kind: ToolKind::DatasetOnly,
+            raw_metadata: json!({
+                "repositoryUrl": "https://gitlab.ethz.ch/Reproducible-Research-Platform/tools/Cell-Doubling-Time",
+                "docker_image": "reproducibleresearchplatform/rrp-eosc:cell-doubling-time_1.0.1"
+            }),
+        },
+        ToolMeta {
+            id: "::st:003".to_string(),
+            version: "v0".to_string(),
+            name: "CernBox".to_string(),
+            uri: "cernbox.cern.ch".to_string(),
+            types: vec!["data access".to_string(), "cernbox".to_string()],
+            description: "Tool to send files to CernBox user".to_string(),
+            slots: vec![Slot {
+                id: "shared_with".to_string(),
+                name: "Shared With".to_string(),
+                slot_typ: SlotTyp::Str,
+                is_optional: false,
+            }],
+            kind: ToolKind::SlotsAndFiles,
+            raw_metadata: json!({}),
+        },
+    ]
+});
+
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
@@ -397,43 +465,14 @@ impl ToolSource for ToolRegistry {
         #[derive(Serialize, Debug)]
         #[serde(tag = "type")]
         enum Payload {
-            #[serde(rename = "file")]
-            File {
-                inputs: Vec<Input>,
-                options: FileOptions,
-            },
-
             #[serde(rename = "semantic")]
             Semantic { query: String, limit: usize },
         }
 
-        let payload = match search {
-            ToolSearch::Files(files) => {
-                let inputs = files
-                    .iter()
-                    .map(|f| {
-                        let path = PathBuf::from_str(&f.path).unwrap();
-                        let name = path.file_name().unwrap().to_str().unwrap();
-
-                        Input {
-                            name: name.to_string(),
-                            mime_type: f.mime_type.clone().unwrap_or_else(|| "unknown".to_string()),
-                        }
-                    })
-                    .collect();
-
-                Payload::File {
-                    inputs,
-                    options: FileOptions {
-                        operator: "or".to_string(),
-                    },
-                }
-            }
-
-            ToolSearch::Semantic { query, limit } => Payload::Semantic {
-                query: query.to_string(),
-                limit,
-            },
+        let ToolSearch { query, limit } = search;
+        let payload = Payload::Semantic {
+            query: query.to_string(),
+            limit,
         };
 
         let url = format!("{}/tools/match", self.root_api.as_str());
