@@ -3,9 +3,8 @@
 */
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, todo};
 
-use crate::{FileEntry, LaunchInput, SlotTyp, SlotValue, ToolMeta};
+use crate::{FileEntry, LaunchInput, SlotValue, ToolMeta};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VreLaunchRequest {
@@ -124,8 +123,17 @@ fn tool_type_to_vre_type(value: &str) -> Option<VreType> {
     }
 }
 
-pub fn resolve_vre_type(tool: &ToolMeta) -> Result<VreType, String> {
-    // First: tool types
+pub fn resolve_vre_type(tool: &ToolMeta) -> anyhow::Result<VreType> {
+    // First: explicit raw_definition["vre_type"]
+    if let Some(value) = tool.raw_definition.get("vre_type") {
+        if let Some(value) = value.as_str() {
+            if let Some(vre_type) = VreType::from_str(value) {
+                return Ok(vre_type);
+            }
+        }
+    }
+
+    // Second: tool types
     for tool_type in &tool.types {
         if let Some(vre_type) = tool_type_to_vre_type(tool_type) {
             return Ok(vre_type);
@@ -150,7 +158,7 @@ pub fn resolve_vre_type(tool: &ToolMeta) -> Result<VreType, String> {
         }
     }
 
-    Err(format!("Cannot resolve vre_type from tool: {}", tool.id))
+    anyhow::bail!(format!("Cannot resolve vre_type from tool: {}", tool.id))
 }
 
 // Helpers
@@ -204,7 +212,7 @@ pub struct RocrateBuilder<'a> {
 }
 
 impl<'a> RocrateBuilder<'a> {
-    pub fn new(request: &'a VreLaunchRequest) -> Result<Self, String> {
+    pub fn new(request: &'a VreLaunchRequest) -> anyhow::Result<Self> {
         let vre_type = resolve_vre_type(&request.tool)?;
 
         Ok(Self {
@@ -273,6 +281,12 @@ impl<'a> RocrateBuilder<'a> {
                     }));
                 }
             }
+        }
+
+        for (_, file_entry) in self.request.input.files.clone() {
+            has_part.push(json!({
+                "@id": file_entry.download_url,
+            }));
         }
 
         // Dataset
@@ -366,7 +380,7 @@ impl<'a> RocrateBuilder<'a> {
             .iter()
             .map(|slot| {
                 json!({
-                    "@id": format!("#input-{}", slot.id)
+                    "@id": format!("#input-{}", slot.name)
                 })
             })
             .collect();
@@ -389,81 +403,6 @@ impl<'a> RocrateBuilder<'a> {
         }));
     }
 
-    // Files
-    fn add_slot_entries(&mut self) {
-        for slot in &self.request.tool.slots {
-            match slot.slot_typ {
-                SlotTyp::FormalParameter | SlotTyp::Unknown | SlotTyp::Num | SlotTyp::Flag | SlotTyp::Str => {
-                    if let SlotValue::Value(value) = self
-                        .request
-                        .input
-                        .slots
-                        .get(&slot.id)
-                        .expect("not able to find the slot name")
-                    {
-                        let mut entity = json!({
-                            "@id": format!("#input-{}", slot.id),
-                            "@type": "FormalParameter",
-                            "name": slot.name,
-                            "additionalType": slot.slot_typ,
-                            "required": !slot.is_optional,
-                        });
-
-                        entity["defaultValue"] = value.clone();
-
-                        self.graph.push(entity);
-                    }
-                }
-                SlotTyp::File => {
-                    if let SlotValue::File(file_entry) = self
-                        .request
-                        .input
-                        .slots
-                        .get(&slot.name)
-                        .expect("not able to find the slot name")
-                    {
-                        let mut entity = json!({
-                            "@id": file_id(file_entry),
-                            "@type": "File",
-                            "name": file_entry.path,
-                            "license": {
-                                "@id": "#licens-unspecified"
-                            }
-                        });
-
-                        if let Some(mime_type) = &file_entry.mime_type {
-                            entity["encodingFormat"] = json!(mime_type);
-                        }
-
-                        if let Some(url) = &file_entry.download_url {
-                            entity["url"] = json!(url);
-                        }
-
-                        entity["contentSize"] = json!(file_entry.size_bytes);
-
-                        // FIXME: (jyu) the file entry not store the checksum type information.
-                        if let Some(checksum) = &file_entry.checksum {
-                            entity["sha256"] = json!(checksum);
-                        }
-
-                        // XXX: onedata is not specially treated at dispatcher. There for it is not needed to
-                        // generate the payload with those fields.
-                        //
-                        // if let Some(domain) = &file.onedata_domain {
-                        //     entity["onedata:onezoneDomain"] = json!(domain);
-                        // }
-                        //
-                        // if let Some(file_id) = &file.onedata_file_id {
-                        //     entity["onedata:fileId"] = json!(file_id);
-                        // }
-
-                        self.graph.push(entity);
-                    }
-                }
-            }
-        }
-    }
-
     // Formal parameters
     fn add_formal_parameters(&mut self) {
         for slot in &self.request.tool.slots {
@@ -475,7 +414,7 @@ impl<'a> RocrateBuilder<'a> {
                     }
                 };
                 self.graph.push(json!({
-                    "@id": format!("#input-{}", &slot.id),
+                    "@id": format!("#input-{}", &slot.name),
                     "@type": "FormalParameter",
                     "name": &slot.name,
                     "additionalType": &slot.slot_typ,
@@ -484,13 +423,29 @@ impl<'a> RocrateBuilder<'a> {
                 }))
             } else {
                 self.graph.push(json!({
-                    "@id": format!("#input-{}", &slot.id),
+                    "@id": format!("#input-{}", &slot.name),
                     "@type": "FormalParameter",
                     "name": &slot.name,
                     "additionalType": &slot.slot_typ,
                     "required": &slot.is_optional,
                 }))
             }
+        }
+    }
+
+    // pure files: these are files like in cernbox do not need to map to any slots
+    fn add_files(&mut self) {
+        for (path, file_entry) in &self.request.input.files {
+            self.graph.push(json!({
+                "@id": &file_entry.download_url,
+                "@type": "File",
+                "name": path,
+                "license": {
+                  "@id": "#license-unspecified"
+                },
+                "encodingFormat": "text/csv",
+                "url": &file_entry.download_url,
+            }))
         }
     }
 
@@ -545,17 +500,17 @@ impl<'a> RocrateBuilder<'a> {
 }
 
 // Public convenience function
-pub fn build_rocrate_from_launch_request(request: &VreLaunchRequest) -> anyhow::Result<Value, String> {
+pub fn build_rocrate_from_launch_request(request: &VreLaunchRequest) -> anyhow::Result<Value> {
     let mut builder = RocrateBuilder::new(request)?;
     builder.add_metadata_descriptor();
     builder.add_root_dataset();
     builder.add_workflow_entity();
     builder.add_programming_language();
-    builder.add_slot_entries();
     // XXX (jyu): All example in the vre-crate doesn't pass dataset from matchmaker, the example will be
     // used for mybinder tool.
-    // builder.add_dataset_entity();
+    builder.add_dataset_entity();
     builder.add_formal_parameters();
+    builder.add_files();
     builder.add_tool_metadata_entity();
     builder.add_supporting_entities();
 
@@ -563,15 +518,18 @@ pub fn build_rocrate_from_launch_request(request: &VreLaunchRequest) -> anyhow::
         "@context": "https://w3id.org/ro/crate/1.1/context",
         "@graph": builder.graph
     });
+    tracing::debug!("{}", serde_json::to_string_pretty(&val)?);
     Ok(val)
 }
 
 // Example
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::DateTime;
 
-    use crate::{DatasetHandle, Slot, ToolKind};
+    use crate::{DatasetHandle, Slot, SlotTyp, ToolKind};
 
     use super::*;
 
@@ -677,6 +635,74 @@ mod tests {
                 ]),
 
                 files: HashMap::new(),
+            },
+
+            runtime_platform: None,
+        };
+
+        let result = build_rocrate_from_launch_request(&request).unwrap();
+
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+
+        assert_eq!(result["@context"], "https://w3id.org/ro/crate/1.1/context");
+
+        assert!(result["@graph"].is_array());
+    }
+
+    #[test]
+    fn builds_ro_crate_cernbox() {
+        let request = VreLaunchRequest {
+            tool: ToolMeta {
+                id: "5487".to_string(),
+                version: "v0".to_string(),
+                name: "Cernbox".to_string(),
+                uri: "cernbox.cern.ch".to_string(),
+                types: vec!["data access".to_string(), "cernbox".to_string()],
+                description: "Tool to send files to CernBox user".to_string(),
+
+                kind: ToolKind::SlotsAndFiles,
+                slots: vec![
+                    Slot {
+                        id: "shared_with".to_string(),
+                        name: "Shared With".to_string(),
+                        slot_typ: SlotTyp::Str,
+                        is_optional: false,
+                    },
+                ],
+
+                raw_definition: json!({}),
+            },
+
+            input: LaunchInput {
+                dataset: DatasetHandle {
+                    url: "https://doi.org/10.17026/DANS-ZMD-STSG".to_string(),
+                    title: "Mapping variability in CO2 saturation in Amazonian rivers reveals undersaturated areas".to_string(),
+                    description: "".to_string(),
+                },
+                slots: HashMap::from([
+                    (
+                        "Shared With".to_string(),
+                        SlotValue::Value(
+                            Value::String("xxx@eosc.cernbox.ch".to_string()),
+                        ),
+                    ),
+                ]),
+
+                files: HashMap::from(
+                    [("__ROOT__/data/readme.txt".to_string(), FileEntry {
+                        download_url: Some(
+                            "https://phys-techsciences.datastations.nl/api/access/datafile/1474".to_string(),
+                        ),
+                        path: "__ROOT__/data/readme.txt".to_string(),
+                        is_dir: false,
+                        size_bytes: 0,
+                        mime_type: Some(
+                            "text/plain".to_string(),
+                        ),
+                        checksum: None,
+                        modified_at: DateTime::from_timestamp_nanos(323),
+                    })]
+                ),
             },
 
             runtime_platform: None,

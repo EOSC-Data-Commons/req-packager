@@ -1116,6 +1116,7 @@ pub mod tool_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// MAtch tools using embeddings
         pub async fn match_tools_by_semantic(
             &mut self,
             request: impl tonic::IntoRequest<super::SearchToolsByTextRequest>,
@@ -1222,6 +1223,7 @@ pub mod tool_service_server {
             tonic::Response<super::MatchToolsByDataResponse>,
             tonic::Status,
         >;
+        /// MAtch tools using embeddings
         async fn match_tools_by_semantic(
             &self,
             request: tonic::Request<super::SearchToolsByTextRequest>,

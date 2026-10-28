@@ -945,12 +945,18 @@ pub enum RuntimeKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SlotTyp {
-    Num,  // float and int
-    Flag, // Bool
-    Str,  // string
-    File, // file
-    FormalParameter, // FormalParameter
-    Unknown, //Unkown types
+    #[serde(rename="float")]
+    Num,
+    #[serde(rename="bool")]
+    Flag,
+    #[serde(rename="string")]
+    Str, 
+    #[serde(rename="file")]
+    File,
+    #[serde(rename="formal_parameter")]
+    FormalParameter,
+    #[serde(rename="unknown")]
+    Unknown,
 }
 
 // XXX: @reggie where do we need to make the slot type validated?
