@@ -699,12 +699,14 @@ impl Dispatcher for MockDispatcher {
                 runtime_platform: None,
             };
 
-            let rocrate = build_rocrate_from_launch_request(&req);
+            let rocrate = build_rocrate_from_launch_request(&req)?;
+
+            tracing::debug!("{}", serde_json::to_string_pretty(&rocrate).unwrap());
 
             let response = client
                 .post("https://dev2.player.eosc-data-commons.eu/requests/metadata_rocrate/")
                 .bearer_auth(token)
-                .json(&rocrate?)
+                .json(&rocrate)
                 .send()
                 .await?
                 .error_for_status()?;
@@ -746,6 +748,9 @@ impl Dispatcher for MockDispatcher {
                     task_status.task_id,
                     task_status.status
                 );
+
+                tracing::debug!("{}", task_status.task_id);
+                tracing::debug!("{}", task_status.status);
 
                 // PENDING 20 times
                 // Every pending sleep 2 secs, the total time out is 40 secs.
