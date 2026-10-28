@@ -10,14 +10,14 @@ use futures_core::stream::BoxStream;
 use futures_util::StreamExt;
 use indicatif::ProgressBar;
 use req_packager::{
-    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolSearch, ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo, grpc::{
+    grpc::{
         dataplayer_service_server::DataplayerServiceServer,
         dataset_service_server::DatasetServiceServer, tool_service_server::ToolServiceServer,
     },
     rocrate_gen::{build_rocrate_from_launch_request, VreLaunchRequest},
-    Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
-    FileEntry, HandlerId, LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler,
-    ToolDatabase, ToolKind, ToolMeta, ToolSource, ToolState, UserId, UserInfo,
+    Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
+    LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolDatabase,
+    ToolKind, ToolMeta, ToolSearch, ToolSource, ToolState, UserId, UserInfo,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -33,17 +33,10 @@ use tonic_health::server::HealthReporter;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    str::FromStr,
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use anyhow::Context;
+use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use tonic::transport::Server;
 use url::Url;
-use anyhow::Context;
-
 
 struct DatahuggerDataSource {
     pool: PgPool,
@@ -236,18 +229,18 @@ impl ToolRegistry {
 // Need to map to the Slot of inner representation.
 // e.g. inputs
 // "inputs": [
-        //     {
-        //         "id": "input.tsv",
-        //         "name": "Zebrafish pectoral-fin gene list",
-        //         "type": [
-        //             "File",
-        //             "TextDigitalDocument"
-        //         ],
-        //         "description": "",
-        //         "additional_type": null,
-        //         "encoding_format": "text/tab-separated-values"
-        //     }
-        // ],
+//     {
+//         "id": "input.tsv",
+//         "name": "Zebrafish pectoral-fin gene list",
+//         "type": [
+//             "File",
+//             "TextDigitalDocument"
+//         ],
+//         "description": "",
+//         "additional_type": null,
+//         "encoding_format": "text/tab-separated-values"
+//     }
+// ],
 #[derive(Deserialize, Debug)]
 struct ResponseSlot {
     id: String,
@@ -264,7 +257,8 @@ struct ResponseSlot {
 
 impl From<ResponseSlot> for Slot {
     fn from(value: ResponseSlot) -> Self {
-        let types: Vec<String> = value.slot_typ
+        let types: Vec<String> = value
+            .slot_typ
             .iter()
             .map(|t| t.to_ascii_lowercase())
             .collect();
@@ -353,7 +347,6 @@ impl From<OneToolSearchResponse> for ToolMeta {
     }
 }
 
-
 #[async_trait::async_trait]
 impl ToolSource for ToolRegistry {
     async fn search_tools_by_text(&self, text: &str) -> anyhow::Result<Vec<ToolMeta>> {
@@ -362,21 +355,14 @@ impl ToolSource for ToolRegistry {
 
         let response = reqwest::get(&url).await?;
 
-        tracing::debug!(
-            "search_tools_by_text status: {}",
-            response.status()
-        );
+        tracing::debug!("search_tools_by_text status: {}", response.status());
 
         let body = response.text().await?;
 
-        tracing::debug!(
-            "search_tools_by_text raw response: {}",
-            body
-        );
+        tracing::debug!("search_tools_by_text raw response: {}", body);
 
         let resp: Vec<OneToolSearchResponse> = serde_json::from_str(&body)?;
         let tools: Vec<ToolMeta> = resp.into_iter().map(Into::into).collect();
-
 
         Ok(tools)
     }
@@ -392,7 +378,7 @@ impl ToolSource for ToolRegistry {
     //    .find_tools(ToolSearch::Semantic {
     //        query: "I am looking for a tool to evaluate and validate my Cryo-EM data before publication or deposition",
     //        limit: 5,
-     //   })
+    //   })
     //.await?;
     async fn find_tools(&self, search: ToolSearch<'_>) -> anyhow::Result<Vec<ToolMeta>> {
         let client = reqwest::Client::new();
@@ -418,10 +404,7 @@ impl ToolSource for ToolRegistry {
             },
 
             #[serde(rename = "semantic")]
-            Semantic {
-                query: String,
-                limit: usize,
-            },
+            Semantic { query: String, limit: usize },
         }
 
         let payload = match search {
@@ -434,10 +417,7 @@ impl ToolSource for ToolRegistry {
 
                         Input {
                             name: name.to_string(),
-                            mime_type: f
-                                .mime_type
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string()),
+                            mime_type: f.mime_type.clone().unwrap_or_else(|| "unknown".to_string()),
                         }
                     })
                     .collect();
@@ -450,12 +430,10 @@ impl ToolSource for ToolRegistry {
                 }
             }
 
-            ToolSearch::Semantic { query, limit } => {
-                Payload::Semantic {
-                    query: query.to_string(),
-                    limit,
-                }
-            }
+            ToolSearch::Semantic { query, limit } => Payload::Semantic {
+                query: query.to_string(),
+                limit,
+            },
         };
 
         let url = format!("{}/tools/match", self.root_api.as_str());
@@ -469,8 +447,8 @@ impl ToolSource for ToolRegistry {
             .await?
             .json()
             .await?;
-        
-        let tools: Vec<ToolMeta> = response.into_iter().map(|resp| {resp.into()}).collect();
+
+        let tools: Vec<ToolMeta> = response.into_iter().map(|resp| resp.into()).collect();
 
         // let mut tools = Vec::with_capacity(response.len());
         //
@@ -500,16 +478,10 @@ impl ToolSource for ToolRegistry {
 
         tracing::debug!("get_tool raw tool response: {}", tool_body);
 
-        let mut resp: OneToolPinResponse =
-            serde_json::from_str(&tool_body).with_context(|| {
-                format!("failed deserializing tool response for id {}", id)
-            })?;
+        let mut resp: OneToolPinResponse = serde_json::from_str(&tool_body)
+            .with_context(|| format!("failed deserializing tool response for id {}", id))?;
 
-        let slots = resp
-            .inputs
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<_>>();
+        let slots = resp.inputs.into_iter().map(Into::into).collect::<Vec<_>>();
 
         let kind = if resp.types.iter().any(|t| t == "data access") {
             ToolKind::SlotsAndFiles

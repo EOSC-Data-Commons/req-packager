@@ -125,7 +125,7 @@ fn tool_type_to_vre_type(value: &str) -> Option<VreType> {
 
 pub fn resolve_vre_type(tool: &ToolMeta) -> anyhow::Result<VreType> {
     // First: explicit raw_definition["vre_type"]
-    if let Some(value) = tool.raw_definition.get("vre_type") {
+    if let Some(value) = tool.raw_metadata.get("vre_type") {
         if let Some(value) = value.as_str() {
             if let Some(vre_type) = VreType::from_str(value) {
                 return Ok(vre_type);
@@ -463,8 +463,7 @@ impl<'a> RocrateBuilder<'a> {
     // Tool metadata
     fn add_tool_metadata_entity(&mut self) {
         let raw_metadata = &self.request.tool.raw_metadata;
-        if raw_metadata.is_null() || raw_metadata.as_object().is_some_and(|obj| obj.is_empty())
-        {
+        if raw_metadata.is_null() || raw_metadata.as_object().is_some_and(|obj| obj.is_empty()) {
             return;
         }
 
@@ -670,7 +669,7 @@ mod tests {
                     },
                 ],
 
-                raw_definition: json!({}),
+                raw_metadata: json!({}),
             },
 
             input: LaunchInput {
