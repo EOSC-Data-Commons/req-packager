@@ -324,17 +324,6 @@ pub struct ToolResponse {
     #[prost(message, optional, tag = "1")]
     pub tool: ::core::option::Option<ToolMeta>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MatchToolsByDataRequest {
-    #[prost(message, repeated, tag = "2")]
-    pub files: ::prost::alloc::vec::Vec<FileEntry>,
-}
-/// Match Tools response include the tool response and the state of the stream
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MatchToolsByDataResponse {
-    #[prost(message, repeated, tag = "1")]
-    pub tools: ::prost::alloc::vec::Vec<ToolMeta>,
-}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SearchToolsByTextRequest {
     #[prost(string, tag = "1")]
@@ -1089,12 +1078,12 @@ pub mod tool_service_client {
                 .insert(GrpcMethod::new("coordinator.v1.ToolService", "GetTool"));
             self.inner.unary(req, path, codec).await
         }
-        /// Match tools from the file list input provided, and maybe some information from user profile.
-        pub async fn match_tools_by_data(
+        /// MAtch tools using embeddings
+        pub async fn match_tools_by_semantic(
             &mut self,
-            request: impl tonic::IntoRequest<super::MatchToolsByDataRequest>,
+            request: impl tonic::IntoRequest<super::SearchToolsByTextRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::MatchToolsByDataResponse>,
+            tonic::Response<super::SearchToolsByTextResponse>,
             tonic::Status,
         > {
             self.inner
@@ -1107,12 +1096,12 @@ pub mod tool_service_client {
                 })?;
             let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/coordinator.v1.ToolService/MatchToolsByData",
+                "/coordinator.v1.ToolService/MatchToolsBySemantic",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new("coordinator.v1.ToolService", "MatchToolsByData"),
+                    GrpcMethod::new("coordinator.v1.ToolService", "MatchToolsBySemantic"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -1188,12 +1177,12 @@ pub mod tool_service_server {
             &self,
             request: tonic::Request<super::GetToolRequest>,
         ) -> std::result::Result<tonic::Response<super::ToolResponse>, tonic::Status>;
-        /// Match tools from the file list input provided, and maybe some information from user profile.
-        async fn match_tools_by_data(
+        /// MAtch tools using embeddings
+        async fn match_tools_by_semantic(
             &self,
-            request: tonic::Request<super::MatchToolsByDataRequest>,
+            request: tonic::Request<super::SearchToolsByTextRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::MatchToolsByDataResponse>,
+            tonic::Response<super::SearchToolsByTextResponse>,
             tonic::Status,
         >;
         /// Search tools from an input text
@@ -1341,25 +1330,25 @@ pub mod tool_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/coordinator.v1.ToolService/MatchToolsByData" => {
+                "/coordinator.v1.ToolService/MatchToolsBySemantic" => {
                     #[allow(non_camel_case_types)]
-                    struct MatchToolsByDataSvc<T: ToolService>(pub Arc<T>);
+                    struct MatchToolsBySemanticSvc<T: ToolService>(pub Arc<T>);
                     impl<
                         T: ToolService,
-                    > tonic::server::UnaryService<super::MatchToolsByDataRequest>
-                    for MatchToolsByDataSvc<T> {
-                        type Response = super::MatchToolsByDataResponse;
+                    > tonic::server::UnaryService<super::SearchToolsByTextRequest>
+                    for MatchToolsBySemanticSvc<T> {
+                        type Response = super::SearchToolsByTextResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::MatchToolsByDataRequest>,
+                            request: tonic::Request<super::SearchToolsByTextRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ToolService>::match_tools_by_data(&inner, request)
+                                <T as ToolService>::match_tools_by_semantic(&inner, request)
                                     .await
                             };
                             Box::pin(fut)
@@ -1371,7 +1360,7 @@ pub mod tool_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = MatchToolsByDataSvc(inner);
+                        let method = MatchToolsBySemanticSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

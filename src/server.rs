@@ -12,7 +12,7 @@ use req_packager::{
     },
     Artifact, AuthToken, Claims, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher,
     DispatcherClient, FileEntry, HandlerId, InfoRequest, LaunchInput, LaunchRequset, RawToken,
-    TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolRegistryClient, ToolSource, ToolState,
+    TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolSearch, ToolRegistryClient, ToolSource, ToolState,
     UserId, UserInfo, Value,
 };
 
@@ -109,16 +109,21 @@ impl ToolSource for MockToolSrc {
         todo!()
     }
 
-    async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+    // async fn find_tools(&self, files: &[FileEntry]) -> anyhow::Result<Vec<ToolMeta>> {
+    async fn find_tools(&self, search: ToolSearch<'_>) -> anyhow::Result<Vec<ToolMeta>> {
         // XXX: very dummy to guess tool by number of files, it needs to be the file mime-type,
         // even in PoC. smart a bit on n % 10.
-        let tools = match files.len() {
-            1 => self.tools[0..1].to_vec(),
-            2 => self.tools[0..2].to_vec(),
-            3 => self.tools[0..3].to_vec(),
-            _ => self.tools[0..4].to_vec(),
-        };
+        let count = 4.min(self.tools.len());
+        let tools = self.tools[0..count].to_vec();
+
         Ok(tools)
+        // let tools = match files.len() {
+        //     1 => self.tools[0..1].to_vec(),
+        //     2 => self.tools[0..2].to_vec(),
+        //     3 => self.tools[0..3].to_vec(),
+        //     _ => self.tools[0..4].to_vec(),
+        // };
+        // Ok(tools)
     }
     async fn get_tool(&self, id: &str) -> anyhow::Result<ToolMeta> {
         Ok(self.tools[0].clone())
@@ -330,7 +335,7 @@ fn generate_tools() -> Vec<ToolMeta> {
             description: "".to_uppercase(),
             slots: vec![],
             kind: ToolKind::SlotsOnly,
-            raw_definition: json!({}),
+            raw_metadata: json!({}),
         })
         .collect()
 }
