@@ -41,8 +41,9 @@ use crate::grpc::{
     tool_service_server::ToolService, tool_state, BrowseDatasetByUrlRequest, BrowseToolsRequest,
     BrowseToolsResponse, DropRequest, DropResponse, GetArtifactRequest, GetArtifactResponse,
     GetStateRequest, GetStateResponse, GetToolRequest, LaunchToolRequest, LaunchToolResponse,
-    MonitorStateRequest, MonitorStateResponse, QueryUserRequest, QueryUserResponse,
-    SearchToolsByTextRequest, SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
+    MatchToolsByDescriptionRequest, MatchToolsByDescriptionResponse, MonitorStateRequest,
+    MonitorStateResponse, QueryUserRequest, QueryUserResponse, SearchToolsByTextRequest,
+    SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -727,7 +728,6 @@ pub struct RequestPackager {
 pub enum SearchType {
     Semantic,
     Description,
-    File,
 }
 
 pub struct ToolSearch<'a> {

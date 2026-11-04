@@ -463,18 +463,17 @@ impl ToolSource for ToolRegistry {
             limit,
             search_type,
         } = search;
-        if (search_type == SearchType::Semantic) {
-            let payload = Payload::Semantic {
+
+        let payload = match search_type {
+            SearchType::Semantic => Payload::Semantic {
                 query: query.to_string(),
                 limit,
-            };
-        }
-        if (search_type == SearchType::Description) {
-            let payload = Payload::Semantic {
+            },
+            SearchType::Description => Payload::Description {
                 description: query.to_string(),
                 limit,
-            };
-        }
+            },
+        };
 
         let url = format!("{}/tools/match", self.root_api.as_str());
 
