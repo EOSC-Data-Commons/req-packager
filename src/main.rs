@@ -16,8 +16,8 @@ use req_packager::{
     },
     rocrate_gen::{build_rocrate_from_launch_request, VreLaunchRequest},
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
-    LaunchInput, RawToken, RenameName, Slot, SlotTyp, SlotValue, TaskHandler, ToolDatabase,
-    ToolKind, ToolMeta, ToolSearch, ToolSource, ToolState, UserId, UserInfo,
+    LaunchInput, RawToken, RenameName, SearchType, Slot, SlotTyp, SlotValue, TaskHandler,
+    ToolDatabase, ToolKind, ToolMeta, ToolSearch, ToolSource, ToolState, UserId, UserInfo,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -435,45 +435,46 @@ impl ToolSource for ToolRegistry {
         Ok(tools)
     }
 
-    // examples:
-    // let tools = self
-    //    .tool_source
-    //    .find_tools(ToolSearch::Files(&files))
-    //    .await?;
-    //
-    //    let tools = self
-    //    .tool_source
-    //    .find_tools(ToolSearch::Semantic {
-    //        query: "I am looking for a tool to evaluate and validate my Cryo-EM data before publication or deposition",
-    //        limit: 5,
-    //   })
-    //.await?;
     async fn find_tools(&self, search: ToolSearch<'_>) -> anyhow::Result<Vec<ToolMeta>> {
         let client = reqwest::Client::new();
 
-        #[derive(Serialize, Debug)]
-        struct Input {
-            name: String,
-            mime_type: String,
-        }
-
-        #[derive(Serialize, Debug)]
-        struct FileOptions {
-            operator: String,
-        }
+        // #[derive(Serialize, Debug)]
+        // struct Input {
+        //     name: String,
+        //     mime_type: String,
+        // }
+        //
+        // #[derive(Serialize, Debug)]
+        // struct FileOptions {
+        //     operator: String,
+        // }
 
         #[derive(Serialize, Debug)]
         #[serde(tag = "type")]
         enum Payload {
             #[serde(rename = "semantic")]
             Semantic { query: String, limit: usize },
+            #[serde(rename = "description")]
+            Description { description: String, limit: usize },
         }
 
-        let ToolSearch { query, limit } = search;
-        let payload = Payload::Semantic {
-            query: query.to_string(),
+        let ToolSearch {
+            query,
             limit,
-        };
+            search_type,
+        } = search;
+        if (search_type == SearchType::Semantic) {
+            let payload = Payload::Semantic {
+                query: query.to_string(),
+                limit,
+            };
+        }
+        if (search_type == SearchType::Description) {
+            let payload = Payload::Semantic {
+                description: query.to_string(),
+                limit,
+            };
+        }
 
         let url = format!("{}/tools/match", self.root_api.as_str());
 
