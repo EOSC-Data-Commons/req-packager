@@ -195,13 +195,24 @@ message SearchToolsByTextResponse {
   repeated ToolMeta tools = 1;
 }
 
+message MatchToolsByDescriptionRequest {
+  string text = 1;
+}
+
+message MatchToolsByDescriptionResponse {
+  repeated ToolMeta tools = 1;
+}
+
 // the tool service as in front of tool-registry DB, this actually can be the packaging hub.
 service ToolService {
   // Get a specific tool by id
   rpc GetTool(GetToolRequest) returns (ToolResponse); 
 
-  // MAtch tools using embeddings
+  // Match tools using embeddings
   rpc MatchToolsBySemantic(SearchToolsByTextRequest) returns (SearchToolsByTextResponse);
+  
+  // Match tools using dataset description endpoint
+  rpc MatchToolsByDescription(MatchToolsByDescriptionRequest) returns (MatchToolsByDescriptionResponse);
 
   // Search tools from an input text
   rpc SearchToolsByText(SearchToolsByTextRequest) returns (SearchToolsByTextResponse);
