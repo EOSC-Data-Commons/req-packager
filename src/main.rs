@@ -454,7 +454,7 @@ impl ToolSource for ToolRegistry {
         enum Payload {
             #[serde(rename = "semantic")]
             Semantic { query: String, limit: usize },
-            #[serde(rename = "description")]
+            #[serde(rename = "dataset")]
             Description { description: String, limit: usize },
         }
 
@@ -474,6 +474,8 @@ impl ToolSource for ToolRegistry {
                 limit,
             },
         };
+
+        tracing::info!("posting match payload {}", serde_json::to_string(&payload)?);
 
         let url = format!("{}/tools/match", self.root_api.as_str());
 
