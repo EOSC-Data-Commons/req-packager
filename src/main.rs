@@ -475,7 +475,7 @@ impl ToolSource for ToolRegistry {
             },
         };
 
-        tracing::info!("posting match payload {}", serde_json::to_string(&payload)?);
+        tracing::debug!("posting match payload {}", serde_json::to_string(&payload)?);
 
         let url = format!("{}/tools/match", self.root_api.as_str());
 
