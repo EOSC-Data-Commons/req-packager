@@ -438,16 +438,6 @@ impl ToolSource for ToolRegistry {
     async fn find_tools(&self, search: ToolSearch<'_>) -> anyhow::Result<Vec<ToolMeta>> {
         let client = reqwest::Client::new();
 
-        // #[derive(Serialize, Debug)]
-        // struct Input {
-        //     name: String,
-        //     mime_type: String,
-        // }
-        //
-        // #[derive(Serialize, Debug)]
-        // struct FileOptions {
-        //     operator: String,
-        // }
 
         #[derive(Serialize, Debug)]
         #[serde(tag = "type")]
