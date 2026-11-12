@@ -335,6 +335,16 @@ pub struct SearchToolsByTextResponse {
     #[prost(message, repeated, tag = "1")]
     pub tools: ::prost::alloc::vec::Vec<ToolMeta>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MatchToolsByDescriptionRequest {
+    #[prost(string, tag = "1")]
+    pub text: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MatchToolsByDescriptionResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub tools: ::prost::alloc::vec::Vec<ToolMeta>,
+}
 /// the lightweight tool do not need resources can be always ready.
 /// the tool that need resource preparing, start frond preparing, and end with the resource being dropped
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1078,7 +1088,7 @@ pub mod tool_service_client {
                 .insert(GrpcMethod::new("coordinator.v1.ToolService", "GetTool"));
             self.inner.unary(req, path, codec).await
         }
-        /// MAtch tools using embeddings
+        /// Match tools using embeddings
         pub async fn match_tools_by_semantic(
             &mut self,
             request: impl tonic::IntoRequest<super::SearchToolsByTextRequest>,
@@ -1102,6 +1112,36 @@ pub mod tool_service_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("coordinator.v1.ToolService", "MatchToolsBySemantic"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Match tools using dataset description endpoint
+        pub async fn match_tools_by_description(
+            &mut self,
+            request: impl tonic::IntoRequest<super::MatchToolsByDescriptionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::MatchToolsByDescriptionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coordinator.v1.ToolService/MatchToolsByDescription",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coordinator.v1.ToolService",
+                        "MatchToolsByDescription",
+                    ),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -1177,12 +1217,20 @@ pub mod tool_service_server {
             &self,
             request: tonic::Request<super::GetToolRequest>,
         ) -> std::result::Result<tonic::Response<super::ToolResponse>, tonic::Status>;
-        /// MAtch tools using embeddings
+        /// Match tools using embeddings
         async fn match_tools_by_semantic(
             &self,
             request: tonic::Request<super::SearchToolsByTextRequest>,
         ) -> std::result::Result<
             tonic::Response<super::SearchToolsByTextResponse>,
+            tonic::Status,
+        >;
+        /// Match tools using dataset description endpoint
+        async fn match_tools_by_description(
+            &self,
+            request: tonic::Request<super::MatchToolsByDescriptionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::MatchToolsByDescriptionResponse>,
             tonic::Status,
         >;
         /// Search tools from an input text
@@ -1361,6 +1409,57 @@ pub mod tool_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = MatchToolsBySemanticSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coordinator.v1.ToolService/MatchToolsByDescription" => {
+                    #[allow(non_camel_case_types)]
+                    struct MatchToolsByDescriptionSvc<T: ToolService>(pub Arc<T>);
+                    impl<
+                        T: ToolService,
+                    > tonic::server::UnaryService<super::MatchToolsByDescriptionRequest>
+                    for MatchToolsByDescriptionSvc<T> {
+                        type Response = super::MatchToolsByDescriptionResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::MatchToolsByDescriptionRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ToolService>::match_tools_by_description(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = MatchToolsByDescriptionSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

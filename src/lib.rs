@@ -41,8 +41,9 @@ use crate::grpc::{
     tool_service_server::ToolService, tool_state, BrowseDatasetByUrlRequest, BrowseToolsRequest,
     BrowseToolsResponse, DropRequest, DropResponse, GetArtifactRequest, GetArtifactResponse,
     GetStateRequest, GetStateResponse, GetToolRequest, LaunchToolRequest, LaunchToolResponse,
-    MonitorStateRequest, MonitorStateResponse, QueryUserRequest, QueryUserResponse,
-    SearchToolsByTextRequest, SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
+    MatchToolsByDescriptionRequest, MatchToolsByDescriptionResponse, MonitorStateRequest,
+    MonitorStateResponse, QueryUserRequest, QueryUserResponse, SearchToolsByTextRequest,
+    SearchToolsByTextResponse, ToolResponse, ToolTaskHandler,
 };
 
 fn current_timestamp() -> Timestamp {
@@ -724,9 +725,15 @@ pub struct RequestPackager {
 // }
 //
 
+pub enum SearchType {
+    Semantic,
+    Description,
+}
+
 pub struct ToolSearch<'a> {
     pub query: &'a str,
     pub limit: usize,
+    pub search_type: SearchType,
 }
 
 #[async_trait::async_trait]
@@ -779,7 +786,8 @@ impl ToolService for ToolDatabase {
             .tool_source
             .find_tools(ToolSearch {
                 query: text,
-                limit: 5,
+                limit: 6,
+                search_type: SearchType::Semantic,
             })
             .await
             .unwrap_or(Vec::new());
@@ -790,6 +798,28 @@ impl ToolService for ToolDatabase {
             .collect::<Vec<grpc::ToolMeta>>();
 
         Ok(Response::new(SearchToolsByTextResponse { tools }))
+    }
+
+    async fn match_tools_by_description(
+        &self,
+        req: Request<MatchToolsByDescriptionRequest>,
+    ) -> Result<Response<MatchToolsByDescriptionResponse>, Status> {
+        tracing::debug!("Got a request to match tools: {req:?}");
+        let text = &req.get_ref().text;
+
+        let tools = self
+            .tool_source
+            .find_tools(ToolSearch {
+                query: text,
+                limit: 6,
+                search_type: SearchType::Description,
+            })
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(grpc::MatchToolsByDescriptionResponse {
+            tools: tools.into_iter().map(Into::into).collect(),
+        }))
     }
 
     async fn search_tools_by_text(
