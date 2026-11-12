@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT \n                        download_url, \n                        file_type, \n                        file_size, \n                        checksum_type::text as \"checksum_type?\",\n                        checksum_value,\n                        updated_at\n                    FROM record_files\n                    WHERE record_identifier = $1\n                    ",
+  "query": "\n                    SELECT \n                        download_url, \n                        file_type, \n                        file_size, \n                        file_name,\n                        checksum_type::text as \"checksum_type?\",\n                        checksum_value,\n                        updated_at\n                    FROM record_files\n                    WHERE record_identifier = $1\n                    ",
   "describe": {
     "columns": [
       {
@@ -20,16 +20,21 @@
       },
       {
         "ordinal": 3,
+        "name": "file_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
         "name": "checksum_type?",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "checksum_value",
         "type_info": "Varchar"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -43,10 +48,11 @@
       false,
       true,
       true,
+      false,
       null,
       true,
       false
     ]
   },
-  "hash": "f718e49d29461931e4348bddadcf74dc6cfe869da4c4386e07d251865e04b3e0"
+  "hash": "72957940861a7f7832364774b14c8351045058f316915a755c173cc091235ace"
 }
