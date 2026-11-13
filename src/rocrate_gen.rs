@@ -33,7 +33,7 @@ impl VreType {
     pub fn programming_language(self) -> &'static str {
         match self {
             Self::Galaxy => "https://galaxyproject.org/",
-            Self::Oscar => "https://oscar.grycap.net/",
+            Self::Oscar => "https://oscar.vre.eosc-data-commons.eu/",
             Self::Scipion => "http://scipion.i2pc.es/",
             Self::Binder => "https://jupyter.org/binder/",
             Self::Jupyter => "https://jupyter.org",
