@@ -1123,6 +1123,50 @@ impl From<grpc::UserInfo> for UserInfo {
 
 pub type RawToken = String;
 
+/// Error returned when a VRE launch fails after the RO-Crate was already built.
+///
+/// Carries the exact RO-Crate payload so downstream components (matchmaker) can
+/// hand it back to the user for inspection/download instead of only a bare error
+/// string. Implementations of [`Dispatcher`] attach this to their `anyhow` error
+/// whenever they have a crate to report; consumers recover it with
+/// `anyhow::Error::downcast_ref::<LaunchError>()`.
+#[derive(Debug, Clone)]
+pub struct LaunchError {
+    pub message: String,
+    pub rocrate: Option<serde_json::Value>,
+}
+
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for LaunchError {}
+
+/// Marker placed between the human-readable message and the embedded RO-Crate
+/// JSON inside the gRPC status message, so the matchmaker can reliably split the
+/// two. Kept in sync with `extractRocrateFromError` in the matchmaker.
+const ROCRATE_MARKER: &str = "\n\n---RO-CRATE-BEGIN---\n";
+
+/// Convert an `anyhow` launch error into a `tonic::Status`. If the error carries a
+/// [`LaunchError`] with a RO-Crate, the crate JSON is appended to the status
+/// message after [`ROCRATE_MARKER`].
+fn launch_error_to_status(err: anyhow::Error) -> Status {
+    let mut message = err.to_string();
+
+    if let Some(launch_err) = err.downcast_ref::<LaunchError>() {
+        if let Some(rocrate) = &launch_err.rocrate {
+            if let Ok(json) = serde_json::to_string(rocrate) {
+                message.push_str(ROCRATE_MARKER);
+                message.push_str(&json);
+            }
+        }
+    }
+
+    Status::internal(message)
+}
+
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync + 'static {
     // TODO: for all types involved in the inner traits, should use mirror type of grpc type
@@ -1291,7 +1335,7 @@ impl DataplayerService for Dataplayer {
                 api_keys,
             )
             .await
-            .unwrap();
+            .map_err(launch_error_to_status)?;
 
         Ok(Response::new(LaunchToolResponse {
             handler_id: task_id.to_string(),

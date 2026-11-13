@@ -16,8 +16,9 @@ use req_packager::{
     },
     rocrate_gen::{build_rocrate_from_launch_request, VreLaunchRequest},
     Artifact, DataRelayer, DataSource, Dataplayer, DatasetInfo, Dispatcher, FileEntry, HandlerId,
-    LaunchInput, RawToken, RenameName, SearchType, Slot, SlotTyp, SlotValue, TaskHandler,
-    ToolDatabase, ToolKind, ToolMeta, ToolSearch, ToolSource, ToolState, UserId, UserInfo,
+    LaunchError, LaunchInput, RawToken, RenameName, SearchType, Slot, SlotTyp, SlotValue,
+    TaskHandler, ToolDatabase, ToolKind, ToolMeta, ToolSearch, ToolSource, ToolState, UserId,
+    UserInfo,
 };
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
@@ -691,11 +692,12 @@ impl Dispatcher for MockDispatcher {
         let is_vip =
             tool.types.contains(&"boutique".to_string()) && tool.types.contains(&"vip".to_string());
         let is_cernbox = tool.types.contains(&"cernbox".to_string());
+        let is_oscar = tool.types.contains(&"oscar".to_string());
 
         // Use cesnet dispatcher
         // uncomment it out to trigger it in real deployment.
         // if is_vip || is_cernbox {
-        if is_cernbox {
+        if is_cernbox || is_oscar {
             // create the ro_crate
             let task_id = uuid::Uuid::new_v4();
 
@@ -721,6 +723,16 @@ impl Dispatcher for MockDispatcher {
 
             let rocrate = build_rocrate_from_launch_request(&req)?;
 
+            // Carry the generated RO-Crate alongside every failure below, so the
+            // matchmaker UI can offer the user a download of the exact crate that
+            // the dispatcher rejected.
+            let with_rocrate = |message: String| -> anyhow::Error {
+                anyhow::Error::new(LaunchError {
+                    message,
+                    rocrate: Some(rocrate.clone()),
+                })
+            };
+
             tracing::debug!("{}", serde_json::to_string_pretty(&rocrate).unwrap());
 
             let response = client
@@ -728,10 +740,15 @@ impl Dispatcher for MockDispatcher {
                 .bearer_auth(token)
                 .json(&rocrate)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(|e| with_rocrate(format!("failed to send launch request to dispatcher: {e}")))?
+                .error_for_status()
+                .map_err(|e| with_rocrate(format!("dispatcher rejected the launch request: {e}")))?;
 
-            let task: TaskResponse = response.json().await?;
+            let task: TaskResponse = response
+                .json()
+                .await
+                .map_err(|e| with_rocrate(format!("failed to parse dispatcher response: {e}")))?;
 
             #[derive(Debug, Deserialize)]
             struct TaskResult {
@@ -749,8 +766,6 @@ impl Dispatcher for MockDispatcher {
             tracing::debug!("task_id {}", dispatcher_task_id);
 
             let mut attempts = 0;
-            // TODO (jyu): when error out, propagate the errors up to the matchmaker with the whole
-            // ro-crate content and make it downloadable in browser.
             loop {
                 let task_status: TaskStatus = client
                     .get(format!(
@@ -758,10 +773,13 @@ impl Dispatcher for MockDispatcher {
                     ))
                     .bearer_auth(token)
                     .send()
-                    .await?
-                    .error_for_status()?
+                    .await
+                    .map_err(|e| with_rocrate(format!("failed to poll dispatcher status: {e}")))?
+                    .error_for_status()
+                    .map_err(|e| with_rocrate(format!("dispatcher status poll returned error: {e}")))?
                     .json()
-                    .await?;
+                    .await
+                    .map_err(|e| with_rocrate(format!("failed to parse dispatcher status: {e}")))?;
 
                 tracing::info!(
                     "task_state id: {}, state: {}",
@@ -775,8 +793,8 @@ impl Dispatcher for MockDispatcher {
                 // PENDING 20 times
                 // Every pending sleep 2 secs, the total time out is 40 secs.
                 if attempts >= 20 {
-                    return Err(anyhow::anyhow!(
-                        "Project did not reach 'Ready' status after 20 attempts"
+                    return Err(with_rocrate(
+                        "Project did not reach 'Ready' status after 20 attempts".to_string(),
                     ));
                 }
                 attempts += 1;
@@ -809,14 +827,14 @@ impl Dispatcher for MockDispatcher {
                         return Ok(task_id);
                     }
                     "FAILURE" => {
-                        return Err(anyhow::anyhow!("Task failed: {:?}", task_status.result));
+                        return Err(with_rocrate(format!("Task failed: {:?}", task_status.result)));
                     }
                     "PENDING" => {
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         continue;
                     }
                     status => {
-                        return Err(anyhow::anyhow!("Unknown status: {status}"));
+                        return Err(with_rocrate(format!("Unknown status: {status}")));
                     }
                 }
             }
