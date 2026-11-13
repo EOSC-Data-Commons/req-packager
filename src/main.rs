@@ -1474,11 +1474,10 @@ impl Dispatcher for MockDispatcher {
                 .expect("didn't find urlpath");
 
             // FIXME: the image should coming from tool-metadata
-            // FIXME: the descriptino should be the tool+dataset
             let project_data = serde_json::json!({
                 "image": image,
-                "name": format!("eosc-{task_id}"),
-                "description": "Created via Coordinator",
+                "name": format!("eosc: '{}'", hdataset.title),
+                "description": hdataset.description,
                 "resources": {
                     "cpu": 1.0,
                     "memMb": 2048
