@@ -1444,7 +1444,11 @@ impl Dispatcher for MockDispatcher {
 
             // CREATE PROJECT
             let slots = &input.slots;
-            let data_mounts: Vec<serde_json::Value> = slots
+
+            // Build per-file mounts from the UI's slot->file mapping. When none
+            // are provided, fall back to mounting the whole dataset (no `path`),
+            // so RRP downloads the entire Zenodo record.
+            let file_mounts: Vec<serde_json::Value> = slots
                 .iter()
                 .filter_map(|(key, entry)| {
                     let slot = tool.slots.iter().find(|s| s.name == *key)?;
@@ -1466,6 +1470,20 @@ impl Dispatcher for MockDispatcher {
                     }
                 })
                 .collect();
+
+            let mount_whole_dataset = file_mounts.is_empty();
+
+            let data_mounts = if mount_whole_dataset {
+                vec![serde_json::json!({
+                    "mountPath": "data",
+                    "source": {
+                        "type": "zenodo",
+                        "doi": doi
+                    }
+                })]
+            } else {
+                file_mounts
+            };
 
             let image = tool
                 .raw_metadata
@@ -1635,21 +1653,26 @@ impl Dispatcher for MockDispatcher {
 
                 let json: serde_json::Value = resp.json().await?;
 
-                let is_all_slot_staged = slots.iter().all(|(key, _)| {
-                    let slot = tool
-                        .slots
-                        .iter()
-                        .find(|&s| s.name == *key)
-                        // TODO: (jyu) This should be an error to tool developer (and who
-                        // registered the tool), not to user. (But user can report to tool provider).
-                        .expect("slot id should align between tool meta and input");
-                    let s = json["dataStatus"][&slot.id]["status"]
+                let is_staged = if mount_whole_dataset {
+                    json["dataStatus"]["data"]["status"]
                         .as_str()
-                        .unwrap_or("");
-                    s == "Available"
-                });
+                        .unwrap_or("") == "Available"
+                } else {
+                    slots.iter().all(|(key, _)| {
+                        let slot = tool
+                            .slots
+                            .iter()
+                            .find(|&s| s.name == *key)
+                            // TODO: (jyu) This should be an error to tool developer (and who
+                            // registered the tool), not to user. (But user can report to tool provider).
+                            .expect("slot id should align between tool meta and input");
+                        json["dataStatus"][&slot.id]["status"]
+                            .as_str()
+                            .unwrap_or("") == "Available"
+                    })
+                };
 
-                if is_all_slot_staged {
+                if is_staged {
                     break;
                 }
 
