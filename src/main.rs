@@ -693,11 +693,12 @@ impl Dispatcher for MockDispatcher {
             tool.types.contains(&"boutique".to_string()) && tool.types.contains(&"vip".to_string());
         let is_cernbox = tool.types.contains(&"cernbox".to_string());
         let is_oscar = tool.types.contains(&"oscar".to_string());
+        let is_galaxy = tool.types.contains(&"galaxy_workflow".to_string())
+            && tool.types.contains(&"workflowhub".to_string());
 
-        // Use cesnet dispatcher
-        // uncomment it out to trigger it in real deployment.
-        // if is_vip || is_cernbox {
-        if is_cernbox || is_oscar {
+        // Use the cesnet dispatcher (ro-crate) for these VRE types instead of the
+        // local mocked dispatch.
+        if is_vip || is_cernbox || is_oscar || is_galaxy {
             // create the ro_crate
             let task_id = uuid::Uuid::new_v4();
 
