@@ -77,7 +77,7 @@ impl VreType {
             Self::Galaxy => "https://usegalaxy.eu/",
             Self::Binder => "https://mybinder.org/",
             Self::Jupyter => "https://jupyterhub.egi.eu/",
-            Self::Oscar => "https://oscar.grycap.net/",
+            Self::Oscar => "https://oscar.vre.eosc-data-commons.eu/",
             Self::Vip => "https://vip.creatis.insa-lyon.fr/",
             Self::Scipion => "http://scipion.i2pc.es/",
             Self::Mddash => "https://mddash.cerit-sc.cz/",
