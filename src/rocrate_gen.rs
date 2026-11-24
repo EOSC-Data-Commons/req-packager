@@ -285,7 +285,7 @@ impl<'a> RocrateBuilder<'a> {
 
         for (_, file_entry) in self.request.input.files.clone() {
             has_part.push(json!({
-                "@id": file_entry.download_url,
+                "@id": file_id(&file_entry),
             }));
         }
 
@@ -418,7 +418,7 @@ impl<'a> RocrateBuilder<'a> {
                     "@type": "FormalParameter",
                     "name": &slot.name,
                     "additionalType": &slot.slot_typ,
-                    "required": &slot.is_optional,
+                    "required": !slot.is_optional,
                     "defaultValue": default_value,
                 }))
             } else {
@@ -427,7 +427,7 @@ impl<'a> RocrateBuilder<'a> {
                     "@type": "FormalParameter",
                     "name": &slot.name,
                     "additionalType": &slot.slot_typ,
-                    "required": &slot.is_optional,
+                    "required": !slot.is_optional,
                 }))
             }
         }
@@ -472,16 +472,29 @@ impl<'a> RocrateBuilder<'a> {
     // pure files: these are files like in cernbox do not need to map to any slots
     fn add_files(&mut self) {
         for (path, file_entry) in &self.request.input.files {
-            self.graph.push(json!({
-                "@id": &file_entry.download_url,
+            let encoding_format = file_entry.mime_type.clone().or_else(|| {
+                file_entry
+                    .download_url
+                    .as_deref()
+                    .and_then(infer_encoding_format)
+                    .map(str::to_string)
+            });
+
+            let mut entity = json!({
+                "@id": file_id(file_entry),
                 "@type": "File",
                 "name": path,
                 "license": {
-                  "@id": "#license-unspecified"
+                    "@id": "#license-unspecified"
                 },
-                "encodingFormat": "text/csv",
-                "url": &file_entry.download_url,
-            }))
+                "url": file_entry.download_url,
+            });
+
+            if let Some(format) = encoding_format {
+                entity["encodingFormat"] = json!(format);
+            }
+
+            self.graph.push(entity);
         }
     }
 
