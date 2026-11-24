@@ -33,7 +33,7 @@ impl VreType {
     pub fn programming_language(self) -> &'static str {
         match self {
             Self::Galaxy => "https://galaxyproject.org/",
-            Self::Oscar => "https://oscar.vre.eosc-data-commons.eu/",
+            Self::Oscar => "https://oscar.grycap.net/",
             Self::Scipion => "http://scipion.i2pc.es/",
             Self::Binder => "https://jupyter.org/binder/",
             Self::Jupyter => "https://jupyter.org",
@@ -433,6 +433,42 @@ impl<'a> RocrateBuilder<'a> {
         }
     }
 
+    // files mapped to slots: these are the selected input files referenced in
+    // `hasPart` and in each FormalParameter's `defaultValue`. They need a
+    // corresponding File entity in `@graph`, otherwise the Dispatcher omits
+    // them from the payload sent to the VRE.
+    fn add_slot_files(&mut self) {
+        for slot_value in self.request.input.slots.values() {
+            if let SlotValue::File(file_entry) = slot_value {
+                let id = file_id(file_entry);
+
+                let encoding_format = file_entry.mime_type.clone().or_else(|| {
+                    file_entry
+                        .download_url
+                        .as_deref()
+                        .and_then(infer_encoding_format)
+                        .map(str::to_string)
+                });
+
+                let mut entity = json!({
+                    "@id": id,
+                    "@type": "File",
+                    "name": file_entry.path,
+                    "license": {
+                        "@id": "#license-unspecified"
+                    },
+                    "url": file_entry.download_url,
+                });
+
+                if let Some(format) = encoding_format {
+                    entity["encodingFormat"] = json!(format);
+                }
+
+                self.graph.push(entity);
+            }
+        }
+    }
+
     // pure files: these are files like in cernbox do not need to map to any slots
     fn add_files(&mut self) {
         for (path, file_entry) in &self.request.input.files {
@@ -509,6 +545,7 @@ pub fn build_rocrate_from_launch_request(request: &VreLaunchRequest) -> anyhow::
     // used for mybinder tool.
     builder.add_dataset_entity();
     builder.add_formal_parameters();
+    builder.add_slot_files();
     builder.add_files();
     builder.add_tool_metadata_entity();
     builder.add_supporting_entities();
