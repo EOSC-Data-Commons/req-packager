@@ -121,37 +121,6 @@ impl DataSource for DatahuggerDataSource {
     }
 
     async fn list_files(&self, uuid: &str) -> anyhow::Result<BoxStream<'static, FileEntry>> {
-        // `select * from record_files rf where record_identifier = '10.17026/AR/0KCPYB' order by rf.file_type desc`
-        let user_agent = format!(
-            "datahugger-over-eosc-coordinator/{}",
-            env!("CARGO_PKG_VERSION")
-        );
-        let mut headers = HeaderMap::new();
-        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("token {token}"))?,
-            );
-        }
-        if let Ok(token) = std::env::var("DRYAD_API_TOKEN") {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {token}"))?,
-            );
-        }
-        headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent)?);
-        let client = ClientBuilder::new()
-            .user_agent(user_agent)
-            .default_headers(headers)
-            .use_native_tls()
-            .build()?;
-        let mut url = uuid.to_string();
-        if url.starts_with("https://doi.org/") {
-            let doi = url.trim_start_matches("https://doi.org/");
-            url = resolve_doi_to_url(&client, doi, true)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        }
         #[derive(Debug)]
         struct RecordFile {
             download_url: String,
@@ -161,39 +130,27 @@ impl DataSource for DatahuggerDataSource {
             checksum_value: Option<String>,
             updated_at: OffsetDateTime,
         }
-        match resolve(&url).await {
-            Ok(ds) => {
-                let mp = NoProgress;
-                let files = ds
-                    .crawl_file(&client, mp)
-                    // TODO: I need log on error cases on the server.
-                    .filter_map(|f| async move { f.ok() })
-                    .boxed();
-                Ok(files)
-            }
-            // NOTE: (jyu) fallback to filedb, this should revert with the datahugger fetch.
-            // Should go to fileDB first and then goes to datahugger for the latest update.
-            Err(err) => {
-                eprintln!("resolve failed, fallback to DB: {:?}", err);
+        let query = sqlx::query_as!(
+            RecordFile,
+            r#"
+            SELECT 
+                download_url, 
+                file_type, 
+                file_size, 
+                checksum_type::text as "checksum_type?",
+                checksum_value,
+                updated_at
+            FROM record_files
+            WHERE record_identifier = $1
+            "#,
+            uuid
+        )
+        .fetch_all(&self.pool)
+        .await;
 
-                let rows = sqlx::query_as!(
-                    RecordFile,
-                    r#"
-                    SELECT 
-                        download_url, 
-                        file_type, 
-                        file_size, 
-                        checksum_type::text as "checksum_type?",
-                        checksum_value,
-                        updated_at
-                    FROM record_files
-                    WHERE record_identifier = $1
-                    "#,
-                    uuid
-                )
-                .fetch_all(&self.pool)
-                .await?;
-
+        match query
+        {
+            Ok(rows) => {
                 // Convert DB rows
                 let items: Vec<FileEntry> = rows
                     .into_iter()
@@ -214,7 +171,49 @@ impl DataSource for DatahuggerDataSource {
                     .collect();
 
                 Ok(stream::iter(items).boxed())
-            }
+            },
+            Err(err) => {
+                // `select * from record_files rf where record_identifier = '10.17026/AR/0KCPYB' order by rf.file_type desc`
+                let user_agent = format!(
+                    "datahugger-over-eosc-coordinator/{}",
+                    env!("CARGO_PKG_VERSION")
+                );
+                let mut headers = HeaderMap::new();
+                if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+                    headers.insert(
+                        AUTHORIZATION,
+                        HeaderValue::from_str(&format!("token {token}"))?,
+                    );
+                }
+                if let Ok(token) = std::env::var("DRYAD_API_TOKEN") {
+                    headers.insert(
+                        AUTHORIZATION,
+                        HeaderValue::from_str(&format!("Bearer {token}"))?,
+                    );
+                }
+                headers.insert(USER_AGENT, HeaderValue::from_str(&user_agent)?);
+                let client = ClientBuilder::new()
+                    .user_agent(user_agent)
+                    .default_headers(headers)
+                    .use_native_tls()
+                    .build()?;
+                let mut url = uuid.to_string();
+                if url.starts_with("https://doi.org/") {
+                    let doi = url.trim_start_matches("https://doi.org/");
+                    url = resolve_doi_to_url(&client, doi, true)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                }
+                let mp = NoProgress;
+
+                let ds = resolve(&url).await.expect("datahugger not able to fetch");
+                let files = ds
+                    .crawl_file(&client, mp)
+                    // TODO: I need log on error cases on the server.
+                    .filter_map(|f| async move { f.ok() })
+                    .boxed();
+                Ok(files)
+            },
         }
     }
 }
